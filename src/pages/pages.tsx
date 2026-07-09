@@ -200,6 +200,7 @@ const ChartTooltip = ({
 export const Dashboard: React.FC = () => {
   const t = useT();
   const nav = useNavigate();
+  const { user } = useAuth();
   const { records, loading, error } = useFirRecords();
   const totalCases = records.length;
   const underInvestigation = countWhere(records, (r) => r.status === "Under Investigation");
@@ -208,6 +209,28 @@ export const Dashboard: React.FC = () => {
     (r) => (r.raw.ChargesheetStatus || "Pending") !== "Filed" && r.status !== "Disposed by Court",
   );
   const highGravity = countWhere(records, (r) => r.gravity === "Heinous");
+  const closedStatuses = ["Charge Sheeted", "Disposed by Court", "Closed - False Case"];
+  const employeeTail = user?.employeeId?.split("-").pop() || "";
+  const assignedRecords = records.filter(
+    (r) =>
+      (employeeTail && r.raw.EmployeeID === employeeTail) ||
+      (user?.name && r.io === user.name),
+  );
+  const myActiveCases = assignedRecords.filter((r) => r.status === "Under Investigation").length;
+  const disposedCases = countWhere(records, (r) => closedStatuses.includes(r.status));
+  const disposalRate = totalCases ? Math.round((disposedCases / totalCases) * 1000) / 10 : 0;
+  const avgInvestigationDays = (() => {
+    const durations = records
+      .map((record) => {
+        const start = new Date(record.date);
+        const end = new Date(record.raw.LatestChargesheetDate || new Date().toISOString().slice(0, 10));
+        if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
+        return Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
+      })
+      .filter((value): value is number => value !== null);
+    if (!durations.length) return 0;
+    return Math.round((durations.reduce((sum, value) => sum + value, 0) / durations.length) * 10) / 10;
+  })();
 
   const metrics = [
     [
@@ -240,15 +263,22 @@ export const Dashboard: React.FC = () => {
     ],
   ];
 
-  const activity = [
-    { day: "02 Jul", fir: 18, solved: 10 },
-    { day: "03 Jul", fir: 24, solved: 14 },
-    { day: "04 Jul", fir: 21, solved: 16 },
-    { day: "05 Jul", fir: 29, solved: 18 },
-    { day: "06 Jul", fir: 17, solved: 13 },
-    { day: "07 Jul", fir: 31, solved: 20 },
-    { day: "08 Jul", fir: 26, solved: 19 },
-  ];
+  const activity = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, index) => {
+        const date = new Date();
+        date.setHours(0, 0, 0, 0);
+        date.setDate(date.getDate() - (6 - index));
+        const iso = date.toISOString().slice(0, 10);
+        const dayRecords = records.filter((record) => record.date === iso);
+        return {
+          day: date.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }),
+          fir: dayRecords.length,
+          solved: dayRecords.filter((record) => closedStatuses.includes(record.status)).length,
+        };
+      }),
+    [records],
+  );
 
   const attention = [
     [
@@ -285,6 +315,17 @@ export const Dashboard: React.FC = () => {
       record.status || record.gravity || record.category,
     ]);
   const attentionRows = liveAttention.length ? liveAttention : attention;
+  const metricFooters = [
+    "loaded from Consolidated_Cases",
+    "currently under investigation",
+    "without filed chargesheet",
+    "marked heinous",
+  ];
+  const dashboardSubtitles = [
+    `${assignedRecords.length} assigned to current login`,
+    `${disposedCases} disposed / charge-sheeted`,
+    "days from registration to latest case state",
+  ];
 
   return (
     <div className="p-5 md:p-6 space-y-5 max-w-[1500px] mx-auto w-full">
@@ -312,10 +353,7 @@ export const Dashboard: React.FC = () => {
             </div>
 
             <div className="text-[11px] text-muted mt-1">
-              <span className="text-brand font-semibold">
-                {m[2]}
-              </span>{" "}
-              {m[3]}
+              {metricFooters[i]}
             </div>
           </button>
         ))}
@@ -468,7 +506,7 @@ export const Dashboard: React.FC = () => {
               "My active cases",
               "ನನ್ನ ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳು"
             ),
-            "17",
+            loading ? "..." : String(myActiveCases),
             t(
               "4 need an update today",
               "4 ಪ್ರಕರಣಗಳಿಗೆ ಇಂದು ನವೀಕರಣ ಅಗತ್ಯ"
@@ -479,7 +517,7 @@ export const Dashboard: React.FC = () => {
               "City disposal rate",
               "ನಗರ ವಿಲೇವಾರಿ ದರ"
             ),
-            "72.4%",
+            loading ? "..." : `${disposalRate}%`,
             t(
               "Up 3.1% this month",
               "ಈ ತಿಂಗಳು 3.1% ಹೆಚ್ಚಳ"
@@ -490,13 +528,13 @@ export const Dashboard: React.FC = () => {
               "Average investigation",
               "ಸರಾಸರಿ ತನಿಖೆ"
             ),
-            "18.6",
+            loading ? "..." : String(avgInvestigationDays),
             t(
               "days · target below 21",
               "ದಿನಗಳು · ಗುರಿ 21 ಕ್ಕಿಂತ ಕಡಿಮೆ"
             ),
           ],
-        ].map((x) => (
+        ].map((x, index) => (
           <Card
             key={String(x[0])}
             className="p-4"
@@ -510,7 +548,7 @@ export const Dashboard: React.FC = () => {
             </div>
 
             <div className="text-[11px] text-muted mt-1">
-              {x[2]}
+              {dashboardSubtitles[index] ?? x[2]}
             </div>
           </Card>
         ))}

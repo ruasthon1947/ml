@@ -91,8 +91,8 @@ export function useCases() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const reload = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const data = await fetchCases();
@@ -108,6 +108,20 @@ export function useCases() {
 
   useEffect(() => {
     void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") void reload(true);
+    };
+    const interval = window.setInterval(refresh, 15000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [reload]);
 
   return { cases, headers, options, loading, error, reload, setCases, setOptions };

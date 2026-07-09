@@ -193,29 +193,79 @@ const OptionInput: React.FC<{
   field: string;
   placeholder?: string;
   disabled?: boolean;
-}> = ({ label, value, onChange, options, field, placeholder, disabled }) => {
-  const listId = `${field}-options`;
-  return (
-    <Field label={label}>
-      <input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        list={listId}
-        placeholder={placeholder}
-        disabled={disabled}
-        className={inputClass}
-      />
-      <datalist id={listId}>
-        {options.map((item) => (
-          <option key={item} value={item} />
-        ))}
-      </datalist>
-    </Field>
-  );
-};
+}> = ({ label, value, onChange, options, placeholder, disabled }) => (
+  <Field label={label}>
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      disabled={disabled}
+      className={inputClass}
+    >
+      <option value="">{placeholder || "Select"}</option>
+      {value && !options.includes(value) && <option value={value}>{value}</option>}
+      {options.map((item) => (
+        <option key={item} value={item}>
+          {item}
+        </option>
+      ))}
+    </select>
+  </Field>
+);
 
 const namesFromTextarea = (value: string) => joinNames(value.split(/\n|;/));
 const textareaFromNames = (value: string) => splitNames(value).join("\n");
+
+const demoFirstNames = [
+  "Aarav",
+  "Ananya",
+  "Bhavya",
+  "Chirag",
+  "Deepa",
+  "Eshwar",
+  "Farhan",
+  "Gowri",
+  "Harish",
+  "Isha",
+  "Kiran",
+  "Meera",
+  "Naveen",
+  "Pooja",
+  "Rohan",
+  "Sneha",
+];
+
+const demoLastNames = [
+  "Rao",
+  "Kumar",
+  "Shetty",
+  "Gowda",
+  "Naidu",
+  "Khan",
+  "Patil",
+  "Prasad",
+  "Hegde",
+  "Nair",
+];
+
+const pickDemo = (values: string[], fallback: string) =>
+  values.length ? values[Math.floor(Math.random() * values.length)] : fallback;
+
+const randomInt = (min: number, max: number) =>
+  Math.floor(Math.random() * (max - min + 1)) + min;
+
+const randomName = () =>
+  `${pickDemo(demoFirstNames, "Demo")} ${pickDemo(demoLastNames, "User")}`;
+
+const randomRecentDate = () => {
+  const date = new Date();
+  date.setDate(date.getDate() - randomInt(0, 45));
+  return date.toISOString().slice(0, 10);
+};
+
+const randomDateTime = (date = randomRecentDate()) =>
+  `${date} ${String(randomInt(0, 23)).padStart(2, "0")}:${String(
+    randomInt(0, 59),
+  ).padStart(2, "0")}:00`;
 
 const syncMessage = (sync: { ok: boolean; skipped?: boolean; message?: string; stderr?: string }) => {
   if (sync.ok) return sync.skipped ? "Local save complete. Sync was skipped." : "Local save complete. Google sync script ran.";
@@ -331,6 +381,108 @@ const NewFIR: React.FC = () => {
   const stationOptions = optionList(options, "PoliceStation");
   const crimeHeadOptions = optionList(options, "CrimeHead");
   const crimeSubHeadOptions = subHeadOptions(options, form.CrimeHead);
+
+  const fillDemoForStep = () => {
+    setForm((current) => {
+      const registeredDate = current.CrimeRegisteredDate || randomRecentDate();
+      const crimeHead = pickDemo(crimeHeadOptions, "Cyber Crime");
+      const crimeSubHead = pickDemo(subHeadOptions(options, crimeHead), "Online Financial Fraud");
+      const victimNames = Array.from({ length: randomInt(1, 3) }, randomName);
+      const accusedNames = Array.from({ length: randomInt(1, 3) }, () =>
+        Math.random() > 0.25 ? randomName() : "Unknown",
+      );
+      const acts = pickDemo(optionList(options, "Acts"), "BNS");
+      const sections = pickDemo(optionList(options, "Sections"), "Cheating");
+
+      switch (step) {
+        case 1:
+          return {
+            ...current,
+            CrimeRegisteredDate: registeredDate,
+            CrimeHead: crimeHead,
+            CrimeSubHead: crimeSubHead,
+            PoliceStation: pickDemo(stationOptions, "Jayanagar Police Station"),
+            PoliceStationType: pickDemo(optionList(options, "PoliceStationType"), "Police Station"),
+            District: pickDemo(optionList(options, "District"), "Bangalore Urban"),
+            Court: pickDemo(optionList(options, "Court"), "Court of ACMM Bengaluru"),
+            EmployeeID: String(randomInt(200, 999)),
+            Officer: pickDemo(optionList(options, "Officer"), randomName().split(" ")[0]),
+            OfficerRank: pickDemo(optionList(options, "OfficerRank"), "Inspector of Police"),
+            OfficerDesignation: pickDemo(
+              optionList(options, "OfficerDesignation"),
+              "Investigating Officer (IO)",
+            ),
+            Status: pickDemo(optionList(options, "Status"), "Under Investigation"),
+            CaseCategory: pickDemo(optionList(options, "CaseCategory"), "FIR"),
+            Gravity: pickDemo(optionList(options, "Gravity"), "Non-Heinous"),
+          };
+        case 2: {
+          const infoDate = randomDateTime(registeredDate);
+          return {
+            ...current,
+            InfoReceivedPSDate: infoDate,
+            IncidentFromDate: randomDateTime(registeredDate),
+            IncidentToDate: randomDateTime(registeredDate),
+            Latitude: `12.${randomInt(850000, 999999)}`,
+            Longitude: `77.${randomInt(450000, 750000)}`,
+            BriefFacts: `Demo complaint: ${randomName()} reported a ${current.CrimeSubHead || crimeSubHead} incident near ${current.PoliceStation || "the selected police station"}. The officer recorded preliminary facts for testing the local_db save flow.`,
+          };
+        }
+        case 3:
+          return {
+            ...current,
+            Complainant: randomName(),
+          };
+        case 4:
+          return {
+            ...current,
+            VictimNames: joinNames(victimNames),
+            VictimCount: String(victimNames.length),
+          };
+        case 5:
+          return {
+            ...current,
+            AccusedNames: joinNames(accusedNames),
+            AccusedCount: String(accusedNames.length),
+          };
+        case 6:
+          return {
+            ...current,
+            Acts: acts,
+            Sections: sections,
+            ArrestCount: String(randomInt(0, Math.max(1, splitNames(current.AccusedNames).length))),
+            ChargesheetCount: String(randomInt(0, 1)),
+            LatestChargesheetDate: Math.random() > 0.5 ? randomRecentDate() : "",
+            ChargesheetStatus: pickDemo(optionList(options, "ChargesheetStatus"), "Pending"),
+          };
+        case 7:
+          return {
+            ...current,
+            CrimeRegisteredDate: current.CrimeRegisteredDate || registeredDate,
+            CrimeHead: current.CrimeHead || crimeHead,
+            CrimeSubHead: current.CrimeSubHead || crimeSubHead,
+            PoliceStation: current.PoliceStation || pickDemo(stationOptions, "Jayanagar Police Station"),
+            Complainant: current.Complainant || randomName(),
+            VictimNames: current.VictimNames || joinNames(victimNames),
+            VictimCount: current.VictimCount || String(victimNames.length),
+            AccusedNames: current.AccusedNames || joinNames(accusedNames),
+            AccusedCount: current.AccusedCount || String(accusedNames.length),
+            Acts: current.Acts || acts,
+            Sections: current.Sections || sections,
+            BriefFacts:
+              current.BriefFacts ||
+              `Demo complaint: ${randomName()} reported a test case for validating the Consolidated_Cases flow.`,
+          };
+        default:
+          return current;
+      }
+    });
+
+    setSaveState({
+      status: "idle",
+      message: `Demo data filled for ${meta.title}. Review it, then click Save step.`,
+    });
+  };
 
   if (loading && editing && !existingCase) {
     return <div className="p-6 text-sm text-muted">Loading case from local_db...</div>;
@@ -499,6 +651,14 @@ const NewFIR: React.FC = () => {
 
               <div className="flex items-center gap-3">
                 <button
+                  onClick={fillDemoForStep}
+                  disabled={saveState.status === "saving"}
+                  className="h-10 px-4 rounded-lg border border-brand/40 text-sm text-brand hover:bg-brand/10 disabled:opacity-40"
+                >
+                  Fill demo
+                </button>
+
+                <button
                   onClick={saveCurrentStep}
                   disabled={saveState.status === "saving"}
                   className="h-10 px-4 rounded-lg border border-line text-sm text-muted hover:text-white disabled:opacity-40"
@@ -638,13 +798,13 @@ const Step1: React.FC<{
           onChange={(value) => update("Status", value)}
           options={optionList(options, "Status")}
         />
-        <OptionInput
-          label="Court"
-          field="Court"
-          value={form.Court}
-          onChange={(value) => update("Court", value)}
-          options={optionList(options, "Court")}
-        />
+        <Field label="Court">
+          <input
+            value={form.Court}
+            onChange={(event) => update("Court", event.target.value)}
+            className={inputClass}
+          />
+        </Field>
       </div>
     </Section>
 
@@ -657,13 +817,13 @@ const Step1: React.FC<{
             className={inputClass}
           />
         </Field>
-        <OptionInput
-          label="Officer"
-          field="Officer"
-          value={form.Officer}
-          onChange={(value) => update("Officer", value)}
-          options={optionList(options, "Officer")}
-        />
+        <Field label="Officer">
+          <input
+            value={form.Officer}
+            onChange={(event) => update("Officer", event.target.value)}
+            className={inputClass}
+          />
+        </Field>
         <OptionInput
           label="OfficerRank"
           field="OfficerRank"
@@ -671,13 +831,13 @@ const Step1: React.FC<{
           onChange={(value) => update("OfficerRank", value)}
           options={optionList(options, "OfficerRank")}
         />
-        <OptionInput
-          label="OfficerDesignation"
-          field="OfficerDesignation"
-          value={form.OfficerDesignation}
-          onChange={(value) => update("OfficerDesignation", value)}
-          options={optionList(options, "OfficerDesignation")}
-        />
+        <Field label="OfficerDesignation">
+          <input
+            value={form.OfficerDesignation}
+            onChange={(event) => update("OfficerDesignation", event.target.value)}
+            className={inputClass}
+          />
+        </Field>
       </div>
     </Section>
   </>
@@ -810,27 +970,15 @@ const Step6: React.FC<{
         <input
           value={form.Acts}
           onChange={(event) => update("Acts", joinNames(event.target.value.split(";")))}
-          list="Acts-options"
           className={inputClass}
         />
-        <datalist id="Acts-options">
-          {optionList(options, "Acts").map((value) => (
-            <option key={value} value={value} />
-          ))}
-        </datalist>
       </Field>
       <Field label="Sections" hint="Separate multiple sections with semicolons.">
         <input
           value={form.Sections}
           onChange={(event) => update("Sections", joinNames(event.target.value.split(";")))}
-          list="Sections-options"
           className={inputClass}
         />
-        <datalist id="Sections-options">
-          {optionList(options, "Sections").map((value) => (
-            <option key={value} value={value} />
-          ))}
-        </datalist>
       </Field>
       <Field label="ArrestCount">
         <input
