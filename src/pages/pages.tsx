@@ -1,0 +1,1724 @@
+import React, { useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import Stub from "./Stub";
+import { useAuth } from "../context/AuthContext";
+import { useLanguage } from "../context/LanguageContext";
+
+type FIR = {
+  id: string;
+  fir: string;
+  category: string;
+  station: string;
+  io: string;
+  status: string;
+  gravity: string;
+  date: string;
+  complainant: string;
+  accused: string;
+  phone: string;
+  vehicle: string;
+  section: string;
+};
+
+export const FIR_RECORDS: FIR[] = [
+  {
+    id: "CR-041/2026",
+    fir: "104430041202600041",
+    category: "Cyber Crime",
+    station: "Whitefield PS",
+    io: "S. Parvathi",
+    status: "Under Investigation",
+    gravity: "Heinous",
+    date: "2026-07-08",
+    complainant: "Ananya Rao",
+    accused: "Unknown",
+    phone: "9876543210",
+    vehicle: "—",
+    section: "BNS 318(4)",
+  },
+  {
+    id: "CR-038/2026",
+    fir: "104430006202600038",
+    category: "Theft",
+    station: "Indiranagar PS",
+    io: "R. Krishnamurthy",
+    status: "Charge-Sheeted",
+    gravity: "Non-Heinous",
+    date: "2026-07-07",
+    complainant: "Ravi Kumar",
+    accused: "Manoj K",
+    phone: "9845011223",
+    vehicle: "KA-03-MN-4421",
+    section: "BNS 303",
+  },
+  {
+    id: "CR-032/2026",
+    fir: "104430041202600032",
+    category: "Offences Against Body",
+    station: "MG Road PS",
+    io: "K. Srinivas",
+    status: "Under Investigation",
+    gravity: "Heinous",
+    date: "2026-07-05",
+    complainant: "Nisha S",
+    accused: "Arun P",
+    phone: "9900123456",
+    vehicle: "—",
+    section: "BNS 109",
+  },
+  {
+    id: "CR-027/2026",
+    fir: "104430011202600027",
+    category: "Motor Vehicle Accident",
+    station: "Yelahanka PS",
+    io: "Rekha M",
+    status: "Registered",
+    gravity: "Non-Heinous",
+    date: "2026-07-03",
+    complainant: "Deepak H",
+    accused: "Driver unknown",
+    phone: "9988776655",
+    vehicle: "KA-50-AB-9090",
+    section: "BNS 281",
+  },
+  {
+    id: "CR-019/2026",
+    fir: "104430020202600019",
+    category: "Narcotics",
+    station: "Cubbon Park PS",
+    io: "Anand Rao",
+    status: "Undetected",
+    gravity: "Heinous",
+    date: "2026-06-29",
+    complainant: "State",
+    accused: "Unknown",
+    phone: "—",
+    vehicle: "—",
+    section: "NDPS 20(b)",
+  },
+  {
+    id: "CR-014/2026",
+    fir: "104430006202600014",
+    category: "Theft",
+    station: "Indiranagar PS",
+    io: "S. Parvathi",
+    status: "Closed",
+    gravity: "Non-Heinous",
+    date: "2026-06-25",
+    complainant: "Meera N",
+    accused: "Vijay R",
+    phone: "9880010101",
+    vehicle: "KA-01-HH-1222",
+    section: "BNS 303",
+  },
+];
+
+const useT = () => useLanguage().tr;
+
+const Card: React.FC<{
+  children: React.ReactNode;
+  className?: string;
+}> = ({ children, className = "" }) => (
+  <div
+    className={`bg-shell border border-line rounded-xl ${className}`}
+  >
+    {children}
+  </div>
+);
+
+/* =========================================================
+   CHART TOOLTIP
+   Works in light and dark mode
+========================================================= */
+
+const ChartTooltip = ({
+  active,
+  payload,
+  label,
+}: any) => {
+  if (!active || !payload || payload.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="bg-shell border border-line rounded-xl px-4 py-3 shadow-xl text-white">
+      {label !== undefined && label !== null && (
+        <div className="text-sm font-semibold text-white mb-2">
+          {label}
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        {payload.map((item: any, index: number) => (
+          <div
+            key={`${item.dataKey || item.name}-${index}`}
+            className="flex items-center justify-between gap-6 text-sm"
+          >
+            <span className="text-muted capitalize">
+              {item.name || item.dataKey}
+            </span>
+
+            <span className="font-semibold text-white num">
+              {item.value}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+
+export const Dashboard: React.FC = () => {
+  const t = useT();
+  const nav = useNavigate();
+
+  const metrics = [
+    [
+      t("Total FIRs", "ಒಟ್ಟು ಎಫ್‌ಐಆರ್‌ಗಳು"),
+      "1,248",
+      "8%",
+      t("vs yesterday", "ನಿನ್ನೆಗಿಂತ"),
+      "",
+    ],
+    [
+      t("Under Investigation", "ತನಿಖೆಯಲ್ಲಿರುವ ಪ್ರಕರಣಗಳು"),
+      "326",
+      "12",
+      t("updated today", "ಇಂದು ನವೀಕರಿಸಲಾಗಿದೆ"),
+      "status=Under Investigation",
+    ],
+    [
+      t("Charge sheets due", "ಚಾರ್ಜ್‌ಶೀಟ್ ಬಾಕಿ"),
+      "9",
+      "7",
+      t("days ahead", "ಮುಂದಿನ ದಿನಗಳು"),
+      "",
+    ],
+    [
+      t("High gravity", "ಗಂಭೀರ ಪ್ರಕರಣಗಳು"),
+      "34",
+      "5",
+      t("new this week", "ಈ ವಾರ ಹೊಸದು"),
+      "gravity=Heinous",
+    ],
+  ];
+
+  const activity = [
+    { day: "02 Jul", fir: 18, solved: 10 },
+    { day: "03 Jul", fir: 24, solved: 14 },
+    { day: "04 Jul", fir: 21, solved: 16 },
+    { day: "05 Jul", fir: 29, solved: 18 },
+    { day: "06 Jul", fir: 17, solved: 13 },
+    { day: "07 Jul", fir: 31, solved: 20 },
+    { day: "08 Jul", fir: 26, solved: 19 },
+  ];
+
+  const attention = [
+    [
+      "CR-041/2026",
+      t(
+        "Investigation update overdue",
+        "ತನಿಖಾ ನವೀಕರಣ ಬಾಕಿ"
+      ),
+      t("3 days overdue", "3 ದಿನ ಬಾಕಿ"),
+    ],
+    [
+      "CR-032/2026",
+      t(
+        "Supervisor review requested",
+        "ಮೇಲ್ವಿಚಾರಕರ ಪರಿಶೀಲನೆ ಅಗತ್ಯ"
+      ),
+      t("Priority", "ಆದ್ಯತೆ"),
+    ],
+    [
+      "CR-027/2026",
+      t(
+        "Charge sheet deadline",
+        "ಚಾರ್ಜ್‌ಶೀಟ್ ಗಡುವು"
+      ),
+      t("Due in 2 days", "2 ದಿನಗಳಲ್ಲಿ ಗಡುವು"),
+    ],
+  ];
+
+  return (
+    <div className="p-5 md:p-6 space-y-5 max-w-[1500px] mx-auto w-full">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        {metrics.map((m, i) => (
+          <button
+            key={String(m[0])}
+            onClick={() =>
+              nav(`/fir${m[4] ? `?${m[4]}` : ""}`)
+            }
+            className="group text-left bg-shell border border-line rounded-xl p-4 hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-soft transition"
+          >
+            <div className="flex justify-between items-start">
+              <div className="text-[11px] text-muted uppercase tracking-wide">
+                {m[0]}
+              </div>
+
+              <div className="h-8 w-8 rounded-lg bg-brand/10 text-brand grid place-items-center text-xs font-bold">
+                {i + 1}
+              </div>
+            </div>
+
+            <div className="text-3xl font-semibold mt-3 num">
+              {m[1]}
+            </div>
+
+            <div className="text-[11px] text-muted mt-1">
+              <span className="text-brand font-semibold">
+                {m[2]}
+              </span>{" "}
+              {m[3]}
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="grid xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,.75fr)] gap-4">
+        <Card className="p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="font-semibold">
+                {t(
+                  "FIR activity",
+                  "ಎಫ್‌ಐಆರ್ ಚಟುವಟಿಕೆ"
+                )}
+              </div>
+
+              <div className="text-xs text-muted mt-1">
+                {t(
+                  "Registered vs solved · last 7 days",
+                  "ನೋಂದಾಯಿತ ಮತ್ತು ಪರಿಹರಿಸಿದ · ಕಳೆದ 7 ದಿನಗಳು"
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-4 text-[11px] text-muted">
+              <span>
+                ● {t("Registered", "ನೋಂದಾಯಿತ")}
+              </span>
+
+              <span>
+                ◌ {t("Solved", "ಪರಿಹರಿಸಲಾಗಿದೆ")}
+              </span>
+            </div>
+          </div>
+
+          <div className="h-[310px] mt-5">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={activity}>
+                <CartesianGrid strokeDasharray="3 3" />
+
+                <XAxis
+                  dataKey="day"
+                  fontSize={11}
+                />
+
+                <YAxis fontSize={11} />
+
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: "var(--shell)",
+                    border: "1px solid var(--line)",
+                    borderRadius: "10px",
+                    color: "var(--text)",
+                  }}
+                  labelStyle={{
+                    color: "var(--text)",
+                  }}
+                  itemStyle={{
+                    color: "var(--text)",
+                  }}
+                />
+
+                <Line
+                  type="monotone"
+                  dataKey="fir"
+                  stroke="currentColor"
+                  strokeWidth={3}
+                  dot={{
+                    r: 4,
+                    fill: "currentColor",
+                  }}
+                />
+
+                <Line
+                  type="monotone"
+                  dataKey="solved"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeDasharray="6 5"
+                  dot={{
+                    r: 3,
+                    fill: "currentColor",
+                  }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <div>
+            <div className="font-semibold">
+              {t(
+                "Needs attention",
+                "ಗಮನ ಅಗತ್ಯ"
+              )}
+            </div>
+
+            <div className="text-xs text-muted mt-1">
+              {t(
+                "Cases requiring officer action",
+                "ಅಧಿಕಾರಿಯ ಕ್ರಮ ಅಗತ್ಯವಿರುವ ಪ್ರಕರಣಗಳು"
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {attention.map((x) => (
+              <button
+                key={x[0]}
+                onClick={() => nav(`/fir/${x[0]}`)}
+                className="w-full text-left border border-line rounded-lg p-3 hover:border-brand/40 hover:bg-panel transition"
+              >
+                <div className="flex justify-between gap-3">
+                  <div>
+                    <div className="text-xs text-brand font-semibold">
+                      {x[0]}
+                    </div>
+
+                    <div className="text-sm font-medium mt-1">
+                      {x[1]}
+                    </div>
+                  </div>
+
+                  <span className="text-[10px] text-brand">
+                    {x[2]}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => nav("/fir")}
+            className="w-full mt-3 h-9 rounded-lg border border-line text-xs font-semibold hover:border-brand/40 transition"
+          >
+            {t(
+              "View all cases",
+              "ಎಲ್ಲ ಪ್ರಕರಣಗಳನ್ನು ನೋಡಿ"
+            )}{" "}
+            →
+          </button>
+        </Card>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-3">
+        {[
+          [
+            t(
+              "My active cases",
+              "ನನ್ನ ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳು"
+            ),
+            "17",
+            t(
+              "4 need an update today",
+              "4 ಪ್ರಕರಣಗಳಿಗೆ ಇಂದು ನವೀಕರಣ ಅಗತ್ಯ"
+            ),
+          ],
+          [
+            t(
+              "City disposal rate",
+              "ನಗರ ವಿಲೇವಾರಿ ದರ"
+            ),
+            "72.4%",
+            t(
+              "Up 3.1% this month",
+              "ಈ ತಿಂಗಳು 3.1% ಹೆಚ್ಚಳ"
+            ),
+          ],
+          [
+            t(
+              "Average investigation",
+              "ಸರಾಸರಿ ತನಿಖೆ"
+            ),
+            "18.6",
+            t(
+              "days · target below 21",
+              "ದಿನಗಳು · ಗುರಿ 21 ಕ್ಕಿಂತ ಕಡಿಮೆ"
+            ),
+          ],
+        ].map((x) => (
+          <Card
+            key={String(x[0])}
+            className="p-4"
+          >
+            <div className="text-xs text-muted">
+              {x[0]}
+            </div>
+
+            <div className="text-2xl font-semibold mt-2">
+              {x[1]}
+            </div>
+
+            <div className="text-[11px] text-muted mt-1">
+              {x[2]}
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+/* =========================================================
+   FIR LIST
+========================================================= */
+
+export const FIRList: React.FC = () => {
+  const t = useT();
+  const nav = useNavigate();
+
+  return (
+    <div className="p-5">
+      <Card className="p-5">
+        <div className="flex justify-between">
+          <div>
+            <h1 className="text-lg font-semibold">
+              {t(
+                "FIR Records",
+                "ಎಫ್‌ಐಆರ್ ದಾಖಲೆಗಳು"
+              )}
+            </h1>
+
+            <p className="text-sm text-muted mt-1">
+              {t(
+                "Open a case to view the complete file and timeline.",
+                "ಸಂಪೂರ್ಣ ಪ್ರಕರಣ ಮತ್ತು ಕಾಲರೇಖೆ ನೋಡಲು ಪ್ರಕರಣ ತೆರೆಯಿರಿ."
+              )}
+            </p>
+          </div>
+
+          <button
+            onClick={() => nav("/fir/new")}
+            className="bg-brand rounded-lg px-4 h-9 text-sm"
+          >
+            +{" "}
+            {t(
+              "Register FIR",
+              "ಎಫ್‌ಐಆರ್ ನೋಂದಣಿ"
+            )}
+          </button>
+        </div>
+
+        <div className="overflow-x-auto mt-5">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-line text-left text-[10px] uppercase text-muted">
+                <th className="py-3">
+                  {t("Case", "ಪ್ರಕರಣ")}
+                </th>
+
+                <th>
+                  {t("Category", "ವರ್ಗ")}
+                </th>
+
+                <th>
+                  {t("Station", "ಠಾಣೆ")}
+                </th>
+
+                <th>IO</th>
+
+                <th>
+                  {t("Registered", "ನೋಂದಣಿ")}
+                </th>
+
+                <th>
+                  {t("Status", "ಸ್ಥಿತಿ")}
+                </th>
+
+                <th />
+              </tr>
+            </thead>
+
+            <tbody>
+              {FIR_RECORDS.map((r) => (
+                <tr
+                  key={r.id}
+                  onClick={() => nav(`/fir/${r.id}`)}
+                  className="border-b border-line hover:bg-panel cursor-pointer"
+                >
+                  <td className="py-3">
+                    <div className="font-semibold text-brand">
+                      {r.id}
+                    </div>
+
+                    <div className="text-[10px] text-muted num">
+                      {r.fir}
+                    </div>
+                  </td>
+
+                  <td>{r.category}</td>
+                  <td>{r.station}</td>
+                  <td>{r.io}</td>
+                  <td>{r.date}</td>
+
+                  <td>
+                    <span className="text-xs border border-line rounded-full px-2 py-1">
+                      {r.status}
+                    </span>
+                  </td>
+
+                  <td className="text-brand">
+                    {t("Open", "ತೆರೆಯಿರಿ")} ›
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+/* =========================================================
+   FIR DETAIL
+========================================================= */
+
+export const FIRDetail: React.FC = () => {
+  const t = useT();
+  const { id } = useParams();
+
+  const r =
+    FIR_RECORDS.find((x) => x.id === id) ||
+    FIR_RECORDS[0];
+
+  const timeline = [
+    [
+      t(
+        "FIR Registered",
+        "ಎಫ್‌ಐಆರ್ ನೋಂದಾಯಿಸಲಾಗಿದೆ"
+      ),
+      "08 Jul 2026 · 09:12",
+      t(
+        "Registered by Officer 10427",
+        "ಅಧಿಕಾರಿ 10427ರಿಂದ ನೋಂದಣಿ"
+      ),
+    ],
+    [
+      t(
+        "IO Assigned",
+        "ತನಿಖಾಧಿಕಾರಿ ನಿಯೋಜನೆ"
+      ),
+      "08 Jul 2026 · 09:30",
+      r.io,
+    ],
+    [
+      t(
+        "Statement Added",
+        "ಹೇಳಿಕೆ ಸೇರಿಸಲಾಗಿದೆ"
+      ),
+      "08 Jul 2026 · 11:45",
+      t(
+        "Complainant statement recorded",
+        "ದೂರುದಾರರ ಹೇಳಿಕೆ ದಾಖಲಿಸಲಾಗಿದೆ"
+      ),
+    ],
+    [
+      t(
+        "Evidence Uploaded",
+        "ಸಾಕ್ಷ್ಯ ಅಪ್‌ಲೋಡ್"
+      ),
+      "08 Jul 2026 · 14:20",
+      t(
+        "2 digital evidence files",
+        "2 ಡಿಜಿಟಲ್ ಸಾಕ್ಷ್ಯ ಕಡತಗಳು"
+      ),
+    ],
+    [
+      t(
+        "Investigation Note",
+        "ತನಿಖಾ ಟಿಪ್ಪಣಿ"
+      ),
+      "09 Jul 2026 · 10:05",
+      t(
+        "Preliminary review completed",
+        "ಪ್ರಾಥಮಿಕ ಪರಿಶೀಲನೆ ಪೂರ್ಣ"
+      ),
+    ],
+  ];
+
+  return (
+    <div className="p-5 space-y-4">
+      <div>
+        <div className="text-xs text-brand">
+          {r.id}
+        </div>
+
+        <h1 className="text-xl font-semibold mt-1">
+          {r.category}
+        </h1>
+
+        <p className="text-sm text-muted">
+          {r.station} · {r.status}
+        </p>
+      </div>
+
+      <div className="grid xl:grid-cols-[1fr_420px] gap-4">
+        <Card className="p-5">
+          <div className="font-semibold">
+            {t(
+              "Case summary",
+              "ಪ್ರಕರಣ ಸಾರಾಂಶ"
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mt-4 text-sm">
+            {[
+              [
+                t(
+                  "FIR number",
+                  "ಎಫ್‌ಐಆರ್ ಸಂಖ್ಯೆ"
+                ),
+                r.fir,
+              ],
+              [
+                t(
+                  "Investigating officer",
+                  "ತನಿಖಾಧಿಕಾರಿ"
+                ),
+                r.io,
+              ],
+              [
+                t(
+                  "Complainant",
+                  "ದೂರುದಾರ"
+                ),
+                r.complainant,
+              ],
+              [
+                t("Accused", "ಆರೋಪಿ"),
+                r.accused,
+              ],
+              [
+                t("Section", "ಸೆಕ್ಷನ್"),
+                r.section,
+              ],
+              [
+                t("Gravity", "ಗಂಭೀರತೆ"),
+                r.gravity,
+              ],
+            ].map((x) => (
+              <div key={x[0]}>
+                <div className="text-[11px] text-muted uppercase">
+                  {x[0]}
+                </div>
+
+                <div className="mt-1">
+                  {x[1]}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <div className="font-semibold">
+            {t(
+              "Case timeline",
+              "ಪ್ರಕರಣ ಕಾಲರೇಖೆ"
+            )}
+          </div>
+
+          <div className="mt-5">
+            {timeline.map((x, i) => (
+              <div
+                className="relative pl-7 pb-5"
+                key={x[0]}
+              >
+                <span className="absolute left-0 top-1 h-3 w-3 rounded-full bg-brand border-2 border-shell" />
+
+                {i < timeline.length - 1 && (
+                  <span className="absolute left-[5px] top-4 bottom-0 w-px bg-line" />
+                )}
+
+                <div className="text-sm font-medium">
+                  {x[0]}
+                </div>
+
+                <div className="text-[11px] text-muted mt-1">
+                  {x[1]}
+                </div>
+
+                <div className="text-xs text-muted mt-1">
+                  {x[2]}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+/* =========================================================
+   ADVANCED SEARCH
+========================================================= */
+
+export const AdvancedSearch: React.FC = () => {
+  const t = useT();
+
+  const [q, setQ] = useState("");
+  const [station, setStation] = useState("");
+  const [status, setStatus] = useState("");
+
+  const [saved, setSaved] = useState<string[]>(() =>
+    JSON.parse(
+      localStorage.getItem("kpfir.savedSearches") ||
+        "[]"
+    )
+  );
+
+  const [recent, setRecent] = useState<string[]>(() =>
+    JSON.parse(
+      localStorage.getItem("kpfir.recentSearches") ||
+        "[]"
+    )
+  );
+
+  const nav = useNavigate();
+
+  const results = useMemo(
+    () =>
+      FIR_RECORDS.filter((r) => {
+        const hay = Object.values(r)
+          .join(" ")
+          .toLowerCase();
+
+        return (
+          (!q ||
+            hay.includes(q.toLowerCase())) &&
+          (!station || r.station === station) &&
+          (!status || r.status === status)
+        );
+      }),
+    [q, station, status]
+  );
+
+  const run = () => {
+    if (!q) return;
+
+    const n = [
+      q,
+      ...recent.filter((x) => x !== q),
+    ].slice(0, 5);
+
+    setRecent(n);
+
+    localStorage.setItem(
+      "kpfir.recentSearches",
+      JSON.stringify(n)
+    );
+  };
+
+  const save = () => {
+    const name =
+      q || `${station} ${status}`.trim();
+
+    if (!name) return;
+
+    const n = [
+      name,
+      ...saved.filter((x) => x !== name),
+    ].slice(0, 6);
+
+    setSaved(n);
+
+    localStorage.setItem(
+      "kpfir.savedSearches",
+      JSON.stringify(n)
+    );
+  };
+
+  return (
+    <div className="p-5 space-y-4">
+      <div>
+        <h1 className="text-xl font-semibold">
+          {t(
+            "Advanced Search",
+            "ಸುಧಾರಿತ ಹುಡುಕಾಟ"
+          )}
+        </h1>
+
+        <p className="text-sm text-muted mt-1">
+          {t(
+            "Search across FIR number, names, phone, vehicle, section, station and IO.",
+            "ಎಫ್‌ಐಆರ್ ಸಂಖ್ಯೆ, ಹೆಸರು, ಫೋನ್, ವಾಹನ, ಸೆಕ್ಷನ್, ಠಾಣೆ ಮತ್ತು ತನಿಖಾಧಿಕಾರಿ ಮೂಲಕ ಹುಡುಕಿ."
+          )}
+        </p>
+      </div>
+
+      <Card className="p-4">
+        <div className="grid lg:grid-cols-[1fr_220px_220px_auto] gap-3">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) =>
+              e.key === "Enter" && run()
+            }
+            placeholder={t(
+              "Crime no, name, phone, vehicle, section...",
+              "ಪ್ರಕರಣ ಸಂಖ್ಯೆ, ಹೆಸರು, ಫೋನ್, ವಾಹನ, ಸೆಕ್ಷನ್..."
+            )}
+            className="h-10 bg-panel border border-line rounded-lg px-3 text-sm outline-none focus:border-brand"
+          />
+
+          <select
+            value={station}
+            onChange={(e) =>
+              setStation(e.target.value)
+            }
+            className="h-10 bg-panel border border-line rounded-lg px-3 text-sm"
+          >
+            <option value="">
+              {t("All stations", "ಎಲ್ಲ ಠಾಣೆಗಳು")}
+            </option>
+
+            <option>Whitefield PS</option>
+            <option>Indiranagar PS</option>
+            <option>MG Road PS</option>
+            <option>Yelahanka PS</option>
+            <option>Cubbon Park PS</option>
+          </select>
+
+          <select
+            value={status}
+            onChange={(e) =>
+              setStatus(e.target.value)
+            }
+            className="h-10 bg-panel border border-line rounded-lg px-3 text-sm"
+          >
+            <option value="">
+              {t("All statuses", "ಎಲ್ಲ ಸ್ಥಿತಿಗಳು")}
+            </option>
+
+            <option>Under Investigation</option>
+            <option>Charge-Sheeted</option>
+            <option>Registered</option>
+            <option>Undetected</option>
+            <option>Closed</option>
+          </select>
+
+          <button
+            onClick={run}
+            className="h-10 px-4 bg-brand rounded-lg text-sm font-semibold"
+          >
+            {t("Search", "ಹುಡುಕಿ")}
+          </button>
+        </div>
+
+        <div className="flex gap-3 mt-3">
+          <button
+            onClick={save}
+            className="h-9 px-3 border border-line rounded-lg text-xs"
+          >
+            ☆{" "}
+            {t(
+              "Save search",
+              "ಹುಡುಕಾಟ ಉಳಿಸಿ"
+            )}
+          </button>
+
+          <span className="text-xs text-muted self-center">
+            {results.length}{" "}
+            {t(
+              "matching cases",
+              "ಹೊಂದುವ ಪ್ರಕರಣಗಳು"
+            )}
+          </span>
+        </div>
+      </Card>
+
+      <div className="grid xl:grid-cols-[240px_1fr] gap-4">
+        <div className="space-y-4">
+          <Card className="p-4">
+            <div className="text-sm font-semibold">
+              {t(
+                "Recent searches",
+                "ಇತ್ತೀಚಿನ ಹುಡುಕಾಟಗಳು"
+              )}
+            </div>
+
+            {recent.map((x) => (
+              <button
+                key={x}
+                onClick={() => setQ(x)}
+                className="block text-left text-xs text-muted hover:text-brand mt-3"
+              >
+                ↻ {x}
+              </button>
+            ))}
+          </Card>
+
+          <Card className="p-4">
+            <div className="text-sm font-semibold">
+              {t(
+                "Saved searches",
+                "ಉಳಿಸಿದ ಹುಡುಕಾಟಗಳು"
+              )}
+            </div>
+
+            {saved.map((x) => (
+              <button
+                key={x}
+                onClick={() => setQ(x)}
+                className="block text-left text-xs text-muted hover:text-brand mt-3"
+              >
+                ☆ {x}
+              </button>
+            ))}
+          </Card>
+        </div>
+
+        <Card className="p-4">
+          <div className="space-y-2">
+            {results.map((r) => (
+              <button
+                onClick={() =>
+                  nav(`/fir/${r.id}`)
+                }
+                key={r.id}
+                className="w-full p-3 rounded-lg border border-line hover:border-brand/40 text-left flex justify-between"
+              >
+                <div>
+                  <div className="text-sm font-semibold text-brand">
+                    {r.id}
+                  </div>
+
+                  <div className="text-xs text-muted mt-1">
+                    {r.category} · {r.complainant} ·{" "}
+                    {r.station}
+                  </div>
+                </div>
+
+                <div className="text-xs text-muted">
+                  {r.status}
+                </div>
+              </button>
+            ))}
+
+            {results.length === 0 && (
+              <div className="py-12 text-center text-sm text-muted">
+                {t(
+                  "No FIR records match the selected filters.",
+                  "ಆಯ್ಕೆ ಮಾಡಿದ ಫಿಲ್ಟರ್‌ಗಳಿಗೆ ಹೊಂದುವ ಎಫ್‌ಐಆರ್ ದಾಖಲೆಗಳಿಲ್ಲ."
+                )}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+/* =========================================================
+   REPORTS
+========================================================= */
+
+export const Reports: React.FC = () => {
+  const t = useT();
+
+  const monthly = [
+    { m: "Feb", fir: 142, closed: 91 },
+    { m: "Mar", fir: 168, closed: 108 },
+    { m: "Apr", fir: 154, closed: 116 },
+    { m: "May", fir: 181, closed: 126 },
+    { m: "Jun", fir: 173, closed: 132 },
+    { m: "Jul", fir: 96, closed: 64 },
+  ];
+
+  const station = [
+    { n: "Whitefield", v: 82 },
+    { n: "Indiranagar", v: 68 },
+    { n: "MG Road", v: 54 },
+    { n: "Yelahanka", v: 47 },
+    { n: "Cubbon Park", v: 39 },
+  ];
+
+  const pie = [
+    { name: "Cyber", value: 31 },
+    { name: "Property", value: 27 },
+    { name: "Body", value: 18 },
+    { name: "Traffic", value: 15 },
+    { name: "Other", value: 9 },
+  ];
+
+  const csv = () => {
+    const rows = [
+      "Case,FIR,Category,Station,Status",
+      ...FIR_RECORDS.map(
+        (r) =>
+          `${r.id},${r.fir},${r.category},${r.station},${r.status}`
+      ),
+    ];
+
+    const url = URL.createObjectURL(
+      new Blob([rows.join("\n")], {
+        type: "text/csv",
+      })
+    );
+
+    const a = document.createElement("a");
+
+    a.href = url;
+    a.download = "fir-report.csv";
+    a.click();
+
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="p-5 space-y-4">
+      <div className="flex justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">
+            {t(
+              "Reports & Analytics",
+              "ವರದಿಗಳು ಮತ್ತು ವಿಶ್ಲೇಷಣೆ"
+            )}
+          </h1>
+
+          <p className="text-sm text-muted mt-1">
+            {t(
+              "Operational trends, workload and disposal performance.",
+              "ಕಾರ್ಯಾಚರಣಾ ಪ್ರವೃತ್ತಿ, ಕೆಲಸದ ಹೊರೆ ಮತ್ತು ವಿಲೇವಾರಿ ಕಾರ್ಯಕ್ಷಮತೆ."
+            )}
+          </p>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => window.print()}
+            className="h-9 px-3 border border-line rounded-lg text-xs"
+          >
+            {t(
+              "Generate PDF",
+              "ಪಿಡಿಎಫ್ ರಚಿಸಿ"
+            )}
+          </button>
+
+          <button
+            onClick={csv}
+            className="h-9 px-3 bg-brand rounded-lg text-xs"
+          >
+            {t(
+              "Export CSV",
+              "ಸಿಎಸ್ವಿ ರಫ್ತು"
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        {[
+          [
+            t(
+              "Disposal rate",
+              "ವಿಲೇವಾರಿ ದರ"
+            ),
+            "72.4%",
+          ],
+          [
+            t(
+              "Avg. investigation",
+              "ಸರಾಸರಿ ತನಿಖೆ"
+            ),
+            "18.6 days",
+          ],
+          [
+            t(
+              "Cases this month",
+              "ಈ ತಿಂಗಳ ಪ್ರಕರಣಗಳು"
+            ),
+            "96",
+          ],
+          [
+            t("Overdue", "ಬಾಕಿ"),
+            "12",
+          ],
+        ].map((x) => (
+          <Card
+            className="p-4"
+            key={x[0]}
+          >
+            <div className="text-[11px] text-muted uppercase">
+              {x[0]}
+            </div>
+
+            <div className="text-2xl font-semibold mt-2">
+              {x[1]}
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <div className="grid xl:grid-cols-2 gap-4">
+        <ChartCard
+          title={t(
+            "FIR and disposal trend",
+            "ಎಫ್‌ಐಆರ್ ಮತ್ತು ವಿಲೇವಾರಿ ಪ್ರವೃತ್ತಿ"
+          )}
+        >
+          <ResponsiveContainer
+            width="100%"
+            height="100%"
+          >
+            <LineChart data={monthly}>
+              <CartesianGrid
+                stroke="currentColor"
+                strokeOpacity={0.15}
+                strokeDasharray="3 3"
+              />
+
+              <XAxis
+                dataKey="m"
+                fontSize={11}
+                stroke="currentColor"
+                opacity={0.65}
+              />
+
+              <YAxis
+                fontSize={11}
+                stroke="currentColor"
+                opacity={0.65}
+              />
+
+              <Tooltip content={<ChartTooltip />} />
+
+              <Line
+                dataKey="fir"
+                stroke="currentColor"
+                strokeWidth={2}
+              />
+
+              <Line
+                dataKey="closed"
+                stroke="currentColor"
+                strokeDasharray="5 4"
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard
+          title={t(
+            "Station workload",
+            "ಠಾಣೆ ಕೆಲಸದ ಹೊರೆ"
+          )}
+        >
+          <ResponsiveContainer
+            width="100%"
+            height="100%"
+          >
+            <BarChart data={station}>
+              <CartesianGrid
+                stroke="currentColor"
+                strokeOpacity={0.15}
+                strokeDasharray="3 3"
+              />
+
+              <XAxis
+                dataKey="n"
+                fontSize={10}
+                stroke="currentColor"
+                opacity={0.65}
+              />
+
+              <YAxis
+                fontSize={11}
+                stroke="currentColor"
+                opacity={0.65}
+              />
+
+              <Tooltip content={<ChartTooltip />} />
+
+              <Bar
+                dataKey="v"
+                fill="currentColor"
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard
+          title={t(
+            "Crime category breakdown",
+            "ಅಪರಾಧ ವರ್ಗ ವಿಭಾಗ"
+          )}
+        >
+          <ResponsiveContainer
+            width="100%"
+            height="100%"
+          >
+            <PieChart>
+              <Pie
+                data={pie}
+                dataKey="value"
+                nameKey="name"
+                outerRadius={90}
+                label
+              >
+                {pie.map((_, i) => (
+                  <Cell
+                    key={i}
+                    fill="currentColor"
+                    opacity={1 - i * 0.12}
+                  />
+                ))}
+              </Pie>
+
+              <Tooltip content={<ChartTooltip />} />
+            </PieChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <Card className="p-4">
+          <div className="text-sm font-semibold">
+            {t(
+              "Performance summary",
+              "ಕಾರ್ಯಕ್ಷಮತೆ ಸಾರಾಂಶ"
+            )}
+          </div>
+
+          <div className="mt-4 space-y-4">
+            {[
+              [
+                t(
+                  "Cases disposed within 30 days",
+                  "30 ದಿನಗಳಲ್ಲಿ ವಿಲೇವಾರಿ"
+                ),
+                78,
+              ],
+              [
+                t(
+                  "Charge sheets filed on time",
+                  "ಸಮಯಕ್ಕೆ ಚಾರ್ಜ್‌ಶೀಟ್"
+                ),
+                84,
+              ],
+              [
+                t(
+                  "Investigation updates current",
+                  "ತನಿಖಾ ನವೀಕರಣ ಪ್ರಸ್ತುತ"
+                ),
+                91,
+              ],
+            ].map((x) => (
+              <div key={String(x[0])}>
+                <div className="flex justify-between text-xs">
+                  <span>{x[0]}</span>
+                  <span>{x[1]}%</span>
+                </div>
+
+                <div className="h-2 bg-panel rounded-full mt-2">
+                  <div
+                    className="h-full bg-brand rounded-full"
+                    style={{
+                      width: `${x[1]}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+const ChartCard: React.FC<{
+  title: string;
+  children: React.ReactNode;
+}> = ({ title, children }) => (
+  <Card className="p-4">
+    <div className="text-sm font-semibold">
+      {title}
+    </div>
+
+    <div className="h-[260px] mt-4">
+      {children}
+    </div>
+  </Card>
+);
+
+/* =========================================================
+   REFERENCE PAGES
+========================================================= */
+
+export const Employees = () => (
+  <Stub
+    title="Employees"
+    description="Directory of officers and staff."
+  />
+);
+
+export const MasterData = () => (
+  <Stub
+    title="Master Data"
+    description="Manage crime and statutory reference data."
+  />
+);
+
+export const Units = () => (
+  <Stub
+    title="Units & Stations"
+    description="Police units and subdivisions."
+  />
+);
+
+export const Courts = () => (
+  <Stub
+    title="Courts"
+    description="Court directories and case mappings."
+  />
+);
+
+/* =========================================================
+   SETTINGS
+========================================================= */
+
+export const Settings: React.FC = () => {
+  const { user } = useAuth();
+  const { language, setLanguage } = useLanguage();
+
+  const t = useT();
+  const nav = useNavigate();
+
+  const [station, setStation] = useState(
+    () =>
+      localStorage.getItem(
+        "kpfir.defaultStation"
+      ) || "Whitefield PS"
+  );
+
+  const [newFir, setNewFir] = useState(
+    () =>
+      localStorage.getItem(
+        "kpfir.notify.newFir"
+      ) !== "false"
+  );
+
+  const [statusUpdates, setStatusUpdates] =
+    useState(
+      () =>
+        localStorage.getItem(
+          "kpfir.notify.status"
+        ) !== "false"
+    );
+
+  const [savedMessage, setSavedMessage] =
+    useState("");
+
+  const save = () => {
+    localStorage.setItem(
+      "kpfir.defaultStation",
+      station
+    );
+
+    localStorage.setItem(
+      "kpfir.notify.newFir",
+      String(newFir)
+    );
+
+    localStorage.setItem(
+      "kpfir.notify.status",
+      String(statusUpdates)
+    );
+
+    setSavedMessage(
+      t(
+        "Changes saved",
+        "ಬದಲಾವಣೆಗಳನ್ನು ಉಳಿಸಲಾಗಿದೆ"
+      )
+    );
+
+    window.setTimeout(
+      () => setSavedMessage(""),
+      2200
+    );
+  };
+
+  const Toggle = ({
+    on,
+    set,
+  }: {
+    on: boolean;
+    set: (v: boolean) => void;
+  }) => (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={() => set(!on)}
+      className={`relative h-5 w-10 shrink-0 rounded-full transition ${
+        on
+          ? "bg-brand"
+          : "bg-panel border border-line"
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition ${
+          on ? "left-[22px]" : "left-0.5"
+        }`}
+      />
+    </button>
+  );
+
+  const SettingRow = ({
+    title,
+    desc,
+    control,
+  }: {
+    title: string;
+    desc: string;
+    control: React.ReactNode;
+  }) => (
+    <div className="flex items-center justify-between gap-5 py-4 border-b border-line last:border-b-0">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold">
+          {title}
+        </div>
+
+        <div className="text-[11px] text-muted mt-1 leading-5">
+          {desc}
+        </div>
+      </div>
+
+      {control}
+    </div>
+  );
+
+  return (
+    <div className="p-5 pb-20 space-y-5 max-w-6xl mx-auto w-full">
+      <div className="text-center">
+        <h1 className="text-xl font-semibold">
+          {t("Settings", "ಸೆಟ್ಟಿಂಗ್‌ಗಳು")}
+        </h1>
+
+        <p className="text-sm text-muted mt-1">
+          {t(
+            "Manage your workspace, alerts and account.",
+            "ನಿಮ್ಮ ಕಾರ್ಯಸ್ಥಳ, ಎಚ್ಚರಿಕೆಗಳು ಮತ್ತು ಖಾತೆಯನ್ನು ನಿರ್ವಹಿಸಿ."
+          )}
+        </p>
+      </div>
+
+      <div className="grid xl:grid-cols-2 gap-4">
+        <Card className="p-5 settings-card">
+          <h2 className="font-semibold">
+            {t(
+              "Preferences",
+              "ಆದ್ಯತೆಗಳು"
+            )}
+          </h2>
+
+          <p className="text-xs text-muted mt-1">
+            {t(
+              "Set your default station and display language.",
+              "ನಿಮ್ಮ ಡೀಫಾಲ್ಟ್ ಠಾಣೆ ಮತ್ತು ಪ್ರದರ್ಶನ ಭಾಷೆಯನ್ನು ಹೊಂದಿಸಿ."
+            )}
+          </p>
+
+          <div className="mt-5 space-y-5">
+            <label className="block">
+              <span className="settings-label">
+                {t(
+                  "Default Police Station",
+                  "ಡೀಫಾಲ್ಟ್ ಪೊಲೀಸ್ ಠಾಣೆ"
+                )}
+              </span>
+
+              <div className="settings-select-wrap">
+                <select
+                  value={station}
+                  onChange={(e) =>
+                    setStation(e.target.value)
+                  }
+                  className="settings-select"
+                >
+                  <option>Whitefield PS</option>
+                  <option>Indiranagar PS</option>
+                  <option>Koramangala PS</option>
+                  <option>Cubbon Park PS</option>
+                </select>
+              </div>
+            </label>
+
+            <label className="block">
+              <span className="settings-label">
+                {t(
+                  "Application Language",
+                  "ಅಪ್ಲಿಕೇಶನ್ ಭಾಷೆ"
+                )}
+              </span>
+
+              <div className="settings-select-wrap">
+                <select
+                  value={language}
+                  onChange={(e) =>
+                    setLanguage(
+                      e.target.value as "en" | "kn"
+                    )
+                  }
+                  className="settings-select"
+                >
+                  <option value="en">
+                    English
+                  </option>
+
+                  <option value="kn">
+                    ಕನ್ನಡ
+                  </option>
+                </select>
+              </div>
+            </label>
+          </div>
+        </Card>
+
+        <Card className="p-5 settings-card">
+          <h2 className="font-semibold">
+            {t(
+              "Notifications",
+              "ಸೂಚನೆಗಳು"
+            )}
+          </h2>
+
+          <p className="text-xs text-muted mt-1">
+            {t(
+              "Choose the case alerts that matter to you.",
+              "ನಿಮಗೆ ಮುಖ್ಯವಾದ ಪ್ರಕರಣ ಎಚ್ಚರಿಕೆಗಳನ್ನು ಆಯ್ಕೆಮಾಡಿ."
+            )}
+          </p>
+
+          <div className="mt-3">
+            <SettingRow
+              title={t(
+                "New FIR Alerts",
+                "ಹೊಸ ಎಫ್‌ಐಆರ್ ಎಚ್ಚರಿಕೆಗಳು"
+              )}
+              desc={t(
+                "Notify me when a new FIR is registered in my unit.",
+                "ನನ್ನ ಘಟಕದಲ್ಲಿ ಹೊಸ ಎಫ್‌ಐಆರ್ ನೋಂದಾಯಿಸಿದಾಗ ಸೂಚಿಸಿ."
+              )}
+              control={
+                <Toggle
+                  on={newFir}
+                  set={setNewFir}
+                />
+              }
+            />
+
+            <SettingRow
+              title={t(
+                "Case Status Updates",
+                "ಪ್ರಕರಣ ಸ್ಥಿತಿ ನವೀಕರಣಗಳು"
+              )}
+              desc={t(
+                "Alert me when an assigned case changes status.",
+                "ನಿಯೋಜಿತ ಪ್ರಕರಣದ ಸ್ಥಿತಿ ಬದಲಾದಾಗ ಎಚ್ಚರಿಸಿ."
+              )}
+              control={
+                <Toggle
+                  on={statusUpdates}
+                  set={setStatusUpdates}
+                />
+              }
+            />
+          </div>
+        </Card>
+
+        <Card className="p-5 settings-card xl:col-span-2">
+          <h2 className="font-semibold">
+            {t(
+              "Account & Security",
+              "ಖಾತೆ ಮತ್ತು ಭದ್ರತೆ"
+            )}
+          </h2>
+
+          <p className="text-xs text-muted mt-1">
+            {t(
+              "Your officer account and password settings.",
+              "ನಿಮ್ಮ ಅಧಿಕಾರಿ ಖಾತೆ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ಸೆಟ್ಟಿಂಗ್‌ಗಳು."
+            )}
+          </p>
+
+          <div className="mt-5 flex flex-col md:flex-row md:items-center justify-between gap-5">
+            <div>
+              <div className="text-sm font-semibold">
+                {user?.name || "Officer 10427"}
+              </div>
+
+              <div className="text-xs text-muted mt-1">
+                {user?.employeeId ||
+                  "KA-SI-10427"}
+              </div>
+            </div>
+
+            <button
+              onClick={() =>
+                nav("/change-password")
+              }
+              className="h-10 px-4 border border-line rounded-lg text-sm font-semibold hover:border-brand/40"
+            >
+              {t(
+                "Change password",
+                "ಪಾಸ್‌ವರ್ಡ್ ಬದಲಿಸಿ"
+              )}
+            </button>
+          </div>
+        </Card>
+      </div>
+
+      <div className="flex items-center justify-end gap-3">
+        {savedMessage && (
+          <span className="text-sm text-brand">
+            ✓ {savedMessage}
+          </span>
+        )}
+
+        <button
+          onClick={save}
+          className="h-10 px-5 rounded-lg bg-brand text-white text-sm font-semibold"
+        >
+          {t(
+            "Save changes",
+            "ಬದಲಾವಣೆಗಳನ್ನು ಉಳಿಸಿ"
+          )}
+        </button>
+      </div>
+    </div>
+  );
+};

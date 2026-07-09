@@ -1,0 +1,244 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+/* Default application theme: LIGHT */
+html {
+  background: #f5f7fb;
+  color: #0b0f14;
+}
+
+html.dark {
+  background: #0b0f14;
+  color: #e6ebf2;
+}
+
+/* === Light mode overrides (applied via .light on <html>) === */
+html.light {
+  background: #f5f7fb;
+  color: #0b0f14;
+}
+html.light body { background: #f5f7fb; }
+
+/* Complete light-mode surface mapping */
+html.light .bg-ink { background-color: #f5f7fb !important; }
+html.light .bg-shell  { background-color: #ffffff !important; }
+html.light .bg-panel  { background-color: #fafbfd !important; }
+html.light .border-line { border-color: #e3e8f0 !important; }
+html.light .bg-shell\/40 { background-color: rgba(255,255,255,0.6) !important; }
+html.light .text-white { color: #0b0f14 !important; }
+html.light .text-muted { color: #5a6678 !important; }
+html.light .text-brand { color: #3b6ef5 !important; }
+
+html.light .placeholder-muted::placeholder { color: #8a95a5 !important; }
+html.light input, html.light textarea, html.light select {
+  color: #0b0f14 !important;
+}
+html.light input::placeholder,
+html.light textarea::placeholder { color: #8a95a5 !important; }
+
+/* Code */
+html.light code { color: #3b6ef5 !important; }
+
+/* Re-skin any element using raw dark Tailwind utilities we use throughout */
+html.light .dark\:bg-ink    { background-color: #ffffff !important; }
+html.light .dark\:bg-shell  { background-color: #ffffff !important; }
+html.light .dark\:bg-panel  { background-color: #fafbfd !important; }
+html.light .dark\:text-white { color: #0b0f14 !important; }
+html.light .dark\:text-muted { color: #5a6678 !important; }
+html.light .dark\:border-line { border-color: #e3e8f0 !important; }
+
+/* Chart text/grid tweaks for light mode */
+html.light .recharts-text { fill: #5a6678 !important; }
+html.light .recharts-cartesian-grid line { stroke: #e3e8f0 !important; }
+
+/* Map our dark-only tokens to light equivalents via utility shortcuts */
+html.light .surface-card  { background-color: #ffffff !important; border-color: #e3e8f0 !important; }
+html.light .surface-panel { background-color: #fafbfd !important; border-color: #e3e8f0 !important; }
+html.light .surface-shell { background-color: #ffffff !important; }
+
+* { box-sizing: border-box; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1f2733; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #2a3441; }
+
+html.light ::-webkit-scrollbar-thumb { background: #d4dae3; }
+html.light ::-webkit-scrollbar-thumb:hover { background: #b8c0cc; }
+
+/* Tabular numerals for IDs/dates */
+.num { font-variant-numeric: tabular-nums; }
+
+/* Subtle dotted grid for AI canvas */
+.dotted-bg {
+  background-image:
+    radial-gradient(rgba(0,0,0,0.08) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+html:not(.light) .dotted-bg {
+  background-image:
+    radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+}
+
+/* Modal backdrop */
+.modal-backdrop {
+  background: rgba(8, 12, 18, 0.7);
+  backdrop-filter: blur(4px);
+}
+html.light .modal-backdrop {
+  background: rgba(15, 23, 42, 0.45);
+}
+
+/* Smooth focus ring */
+.focus-ring:focus { outline: none; box-shadow: 0 0 0 2px rgba(59,110,245,0.45); }
+
+/* Light mode navigation hover: never use the dark panel surface */
+html.light aside nav a:not([aria-current="page"]):hover {
+  background-color: #f1f5f9 !important;
+  color: #0b0f14 !important;
+}
+
+html.light aside nav a[aria-current="page"] {
+  color: #0b0f14 !important;
+}
+
+/* =========================================================
+   GLOBAL LIGHT MODE HOVER SAFETY
+   Prevent dark hover surfaces anywhere in the application.
+   ========================================================= */
+html.light .hover\:bg-panel:hover {
+  background-color: #f1f5f9 !important;
+}
+
+html.light .hover\:text-white:hover {
+  color: #0b0f14 !important;
+}
+
+html.light button:hover,
+html.light a:hover {
+  --tw-ring-color: rgba(59, 110, 245, 0.18);
+}
+
+/* Table rows must also remain light. */
+html.light tbody tr:hover,
+html.light tr:hover {
+  background-color: #f8fafc !important;
+}
+
+/* New FIR step rail: inactive step hover stays light. */
+html.light .new-fir-step:hover {
+  background-color: #f1f5f9 !important;
+  color: #0b0f14 !important;
+}
+
+/* =========================================================
+   SIDEBAR ACCOUNT FOOTER
+   ========================================================= */
+.sidebar-account {
+  background: #0f151e;
+  color: #e6ebf2;
+}
+.sidebar-account-name { color: #e6ebf2; }
+.sidebar-theme-button {
+  background: #141a23;
+  color: #e6ebf2;
+}
+.sidebar-theme-button:hover { background: #192231; }
+html.light .sidebar-account {
+  background: #ffffff !important;
+  color: #0b0f14 !important;
+}
+html.light .sidebar-account-name { color: #0b0f14 !important; }
+html.light .sidebar-theme-button {
+  background: #f8fafc !important;
+  color: #0b0f14 !important;
+  border-color: #e3e8f0 !important;
+}
+html.light .sidebar-theme-button:hover { background: #f1f5f9 !important; }
+
+/* =========================================================
+   POLISHED SETTINGS CONTROLS
+   ========================================================= */
+.settings-card {
+  min-height: 0;
+}
+
+.settings-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: #8fa1bd;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.settings-select-wrap {
+  position: relative;
+}
+
+.settings-select-wrap::after {
+  content: "⌄";
+  position: absolute;
+  right: 0.9rem;
+  top: 50%;
+  transform: translateY(-55%);
+  color: #8fa1bd;
+  font-size: 1rem;
+  pointer-events: none;
+}
+
+.settings-select {
+  width: 100%;
+  height: 2.75rem;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid #263142;
+  border-radius: 0.65rem;
+  background: #141a23;
+  color: #e6ebf2;
+  padding: 0 2.6rem 0 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.settings-select:hover {
+  border-color: #3b4a60;
+}
+
+.settings-select:focus {
+  outline: none;
+  border-color: #3b6ef5;
+  box-shadow: 0 0 0 3px rgba(59, 110, 245, 0.14);
+}
+
+html.light .settings-label {
+  color: #5a6678;
+}
+
+html.light .settings-select {
+  background: #ffffff;
+  border-color: #dce3ed;
+  color: #0b0f14;
+}
+
+html.light .settings-select:hover {
+  border-color: #b9c5d6;
+  background: #fafbfd;
+}
+
+html.light .settings-select:focus {
+  border-color: #3b6ef5;
+  background: #ffffff;
+}
