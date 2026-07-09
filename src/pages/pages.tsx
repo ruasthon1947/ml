@@ -17,6 +17,17 @@ import {
 import Stub from "./Stub";
 import { useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
+import {
+  FirRecord,
+  caseRoute,
+  countWhere,
+  csvEscape,
+  findCase,
+  optionList,
+  searchText,
+  toFirRecord,
+  useFirRecords,
+} from "../lib/cases";
 
 type FIR = {
   id: string;
@@ -189,33 +200,41 @@ const ChartTooltip = ({
 export const Dashboard: React.FC = () => {
   const t = useT();
   const nav = useNavigate();
+  const { records, loading, error } = useFirRecords();
+  const totalCases = records.length;
+  const underInvestigation = countWhere(records, (r) => r.status === "Under Investigation");
+  const chargeSheetsDue = countWhere(
+    records,
+    (r) => (r.raw.ChargesheetStatus || "Pending") !== "Filed" && r.status !== "Disposed by Court",
+  );
+  const highGravity = countWhere(records, (r) => r.gravity === "Heinous");
 
   const metrics = [
     [
       t("Total FIRs", "ಒಟ್ಟು ಎಫ್‌ಐಆರ್‌ಗಳು"),
-      "1,248",
-      "8%",
+      loading ? "..." : totalCases.toLocaleString("en-IN"),
+      String(totalCases),
       t("vs yesterday", "ನಿನ್ನೆಗಿಂತ"),
       "",
     ],
     [
       t("Under Investigation", "ತನಿಖೆಯಲ್ಲಿರುವ ಪ್ರಕರಣಗಳು"),
-      "326",
-      "12",
+      loading ? "..." : underInvestigation.toLocaleString("en-IN"),
+      String(underInvestigation),
       t("updated today", "ಇಂದು ನವೀಕರಿಸಲಾಗಿದೆ"),
       "status=Under Investigation",
     ],
     [
       t("Charge sheets due", "ಚಾರ್ಜ್‌ಶೀಟ್ ಬಾಕಿ"),
-      "9",
-      "7",
+      loading ? "..." : chargeSheetsDue.toLocaleString("en-IN"),
+      String(chargeSheetsDue),
       t("days ahead", "ಮುಂದಿನ ದಿನಗಳು"),
       "",
     ],
     [
       t("High gravity", "ಗಂಭೀರ ಪ್ರಕರಣಗಳು"),
-      "34",
-      "5",
+      loading ? "..." : highGravity.toLocaleString("en-IN"),
+      String(highGravity),
       t("new this week", "ಈ ವಾರ ಹೊಸದು"),
       "gravity=Heinous",
     ],
@@ -257,6 +276,15 @@ export const Dashboard: React.FC = () => {
       t("Due in 2 days", "2 ದಿನಗಳಲ್ಲಿ ಗಡುವು"),
     ],
   ];
+  const liveAttention = records
+    .filter((record) => record.status === "Under Investigation" || record.gravity === "Heinous")
+    .slice(0, 3)
+    .map((record) => [
+      caseRoute(record.raw),
+      record.label,
+      record.status || record.gravity || record.category,
+    ]);
+  const attentionRows = liveAttention.length ? liveAttention : attention;
 
   return (
     <div className="p-5 md:p-6 space-y-5 max-w-[1500px] mx-auto w-full">
@@ -395,7 +423,7 @@ export const Dashboard: React.FC = () => {
           </div>
 
           <div className="mt-4 space-y-2">
-            {attention.map((x) => (
+            {attentionRows.map((x) => (
               <button
                 key={x[0]}
                 onClick={() => nav(`/fir/${x[0]}`)}
@@ -498,6 +526,7 @@ export const Dashboard: React.FC = () => {
 export const FIRList: React.FC = () => {
   const t = useT();
   const nav = useNavigate();
+  const { records, loading, error } = useFirRecords();
 
   return (
     <div className="p-5">
@@ -562,15 +591,15 @@ export const FIRList: React.FC = () => {
             </thead>
 
             <tbody>
-              {FIR_RECORDS.map((r) => (
+              {records.map((r) => (
                 <tr
                   key={r.id}
-                  onClick={() => nav(`/fir/${r.id}`)}
+                  onClick={() => nav(`/fir/${caseRoute(r.raw)}`)}
                   className="border-b border-line hover:bg-panel cursor-pointer"
                 >
                   <td className="py-3">
                     <div className="font-semibold text-brand">
-                      {r.id}
+                      {r.label}
                     </div>
 
                     <div className="text-[10px] text-muted num">
@@ -609,10 +638,23 @@ export const FIRList: React.FC = () => {
 export const FIRDetail: React.FC = () => {
   const t = useT();
   const { id } = useParams();
+  const nav = useNavigate();
+  const { cases, loading, error } = useFirRecords();
 
-  const r =
-    FIR_RECORDS.find((x) => x.id === id) ||
-    FIR_RECORDS[0];
+  const matchedCase = findCase(cases, id) || cases[0];
+  const r = matchedCase ? toFirRecord(matchedCase) : undefined;
+
+  if (loading) {
+    return <div className="p-5 text-sm text-muted">Loading case from local_db...</div>;
+  }
+
+  if (error) {
+    return <div className="p-5 text-sm text-rose">{error}</div>;
+  }
+
+  if (!r) {
+    return <div className="p-5 text-sm text-muted">Case not found in Consolidated_Cases.csv.</div>;
+  }
 
   const timeline = [
     [
@@ -673,7 +715,7 @@ export const FIRDetail: React.FC = () => {
     <div className="p-5 space-y-4">
       <div>
         <div className="text-xs text-brand">
-          {r.id}
+          {r.label}
         </div>
 
         <h1 className="text-xl font-semibold mt-1">
@@ -684,6 +726,13 @@ export const FIRDetail: React.FC = () => {
           {r.station} · {r.status}
         </p>
       </div>
+
+      <button
+        onClick={() => nav(`/fir/${caseRoute(r.raw)}/edit`)}
+        className="h-9 px-3 rounded-lg bg-brand text-white text-xs font-semibold"
+      >
+        Edit
+      </button>
 
       <div className="grid xl:grid-cols-[1fr_420px] gap-4">
         <Card className="p-5">
@@ -809,13 +858,12 @@ export const AdvancedSearch: React.FC = () => {
   );
 
   const nav = useNavigate();
+  const { records, options, loading, error } = useFirRecords();
 
   const results = useMemo(
     () =>
-      FIR_RECORDS.filter((r) => {
-        const hay = Object.values(r)
-          .join(" ")
-          .toLowerCase();
+      records.filter((r) => {
+        const hay = searchText(r);
 
         return (
           (!q ||
@@ -824,7 +872,7 @@ export const AdvancedSearch: React.FC = () => {
           (!status || r.status === status)
         );
       }),
-    [q, station, status]
+    [q, records, station, status]
   );
 
   const run = () => {
@@ -906,11 +954,9 @@ export const AdvancedSearch: React.FC = () => {
               {t("All stations", "ಎಲ್ಲ ಠಾಣೆಗಳು")}
             </option>
 
-            <option>Whitefield PS</option>
-            <option>Indiranagar PS</option>
-            <option>MG Road PS</option>
-            <option>Yelahanka PS</option>
-            <option>Cubbon Park PS</option>
+            {optionList(options, "PoliceStation").map((value) => (
+              <option key={value}>{value}</option>
+            ))}
           </select>
 
           <select
@@ -924,11 +970,9 @@ export const AdvancedSearch: React.FC = () => {
               {t("All statuses", "ಎಲ್ಲ ಸ್ಥಿತಿಗಳು")}
             </option>
 
-            <option>Under Investigation</option>
-            <option>Charge-Sheeted</option>
-            <option>Registered</option>
-            <option>Undetected</option>
-            <option>Closed</option>
+            {optionList(options, "Status").map((value) => (
+              <option key={value}>{value}</option>
+            ))}
           </select>
 
           <button
@@ -1007,14 +1051,14 @@ export const AdvancedSearch: React.FC = () => {
             {results.map((r) => (
               <button
                 onClick={() =>
-                  nav(`/fir/${r.id}`)
+                  nav(`/fir/${caseRoute(r.raw)}`)
                 }
                 key={r.id}
                 className="w-full p-3 rounded-lg border border-line hover:border-brand/40 text-left flex justify-between"
               >
                 <div>
                   <div className="text-sm font-semibold text-brand">
-                    {r.id}
+                    {r.label}
                   </div>
 
                   <div className="text-xs text-muted mt-1">
@@ -1050,38 +1094,58 @@ export const AdvancedSearch: React.FC = () => {
 
 export const Reports: React.FC = () => {
   const t = useT();
+  const { records, loading, error } = useFirRecords();
 
-  const monthly = [
-    { m: "Feb", fir: 142, closed: 91 },
-    { m: "Mar", fir: 168, closed: 108 },
-    { m: "Apr", fir: 154, closed: 116 },
-    { m: "May", fir: 181, closed: 126 },
-    { m: "Jun", fir: 173, closed: 132 },
-    { m: "Jul", fir: 96, closed: 64 },
-  ];
+  const monthly = useMemo(() => {
+    const buckets = new Map<string, { m: string; fir: number; closed: number }>();
+    for (const record of records) {
+      const date = new Date(record.date);
+      if (!Number.isFinite(date.getTime())) continue;
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const label = date.toLocaleDateString("en-IN", { month: "short" });
+      const bucket = buckets.get(key) || { m: label, fir: 0, closed: 0 };
+      bucket.fir += 1;
+      if (["Charge Sheeted", "Disposed by Court", "Closed - False Case"].includes(record.status)) {
+        bucket.closed += 1;
+      }
+      buckets.set(key, bucket);
+    }
+    return Array.from(buckets.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-6)
+      .map(([, value]) => value);
+  }, [records]);
 
-  const station = [
-    { n: "Whitefield", v: 82 },
-    { n: "Indiranagar", v: 68 },
-    { n: "MG Road", v: 54 },
-    { n: "Yelahanka", v: 47 },
-    { n: "Cubbon Park", v: 39 },
-  ];
+  const station = useMemo(() => {
+    const buckets = new Map<string, number>();
+    for (const record of records) {
+      const key = record.station || "Unassigned";
+      buckets.set(key, (buckets.get(key) || 0) + 1);
+    }
+    return Array.from(buckets.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, value]) => ({ n: name.replace(" Police Station", ""), v: value }));
+  }, [records]);
 
-  const pie = [
-    { name: "Cyber", value: 31 },
-    { name: "Property", value: 27 },
-    { name: "Body", value: 18 },
-    { name: "Traffic", value: 15 },
-    { name: "Other", value: 9 },
-  ];
+  const pie = useMemo(() => {
+    const buckets = new Map<string, number>();
+    for (const record of records) {
+      const key = record.raw.CrimeHead || record.category || "Other";
+      buckets.set(key, (buckets.get(key) || 0) + 1);
+    }
+    return Array.from(buckets.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, value]) => ({ name, value }));
+  }, [records]);
 
   const csv = () => {
     const rows = [
       "Case,FIR,Category,Station,Status",
-      ...FIR_RECORDS.map(
+      ...records.map(
         (r) =>
-          `${r.id},${r.fir},${r.category},${r.station},${r.status}`
+          [r.label, r.fir, r.category, r.station, r.status].map(csvEscape).join(",")
       ),
     ];
 

@@ -1,41 +1,173 @@
-import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
+import {
+  CaseOptions,
+  CaseRecord,
+  caseKey,
+  caseRoute,
+  findCase,
+  joinNames,
+  optionList,
+  saveCase,
+  splitNames,
+  subHeadOptions,
+  todayIso,
+  useCases,
+} from "../lib/cases";
 
 const STEPS = [
-  { id: 1, title: ["Case Basics", "ಪ್ರಕರಣದ ಮೂಲ ವಿವರಗಳು"], subtitle: ["Crime number, station, IO, dates, location", "ಅಪರಾಧ ಸಂಖ್ಯೆ, ಠಾಣೆ, ತನಿಖಾಧಿಕಾರಿ, ದಿನಾಂಕ, ಸ್ಥಳ"] },
-  { id: 2, title: ["Incident Details", "ಘಟನೆಯ ವಿವರಗಳು"], subtitle: ["Brief facts and incident timeframe", "ಸಂಕ್ಷಿಪ್ತ ಮಾಹಿತಿ ಮತ್ತು ಘಟನೆಯ ಕಾಲಾವಧಿ"] },
-  { id: 3, title: ["Complainant(s)", "ದೂರುದಾರರು"], subtitle: ["File by whom?", "ದೂರು ಸಲ್ಲಿಸಿದವರು ಯಾರು?"] },
-  { id: 4, title: ["Victim(s)", "ಬಾಧಿತರು"], subtitle: ["Who was harmed?", "ಯಾರು ಬಾಧಿತರಾದರು?"] },
-  { id: 5, title: ["Accused", "ಆರೋಪಿತರು"], subtitle: ["Who is alleged? Auto A1, A2...", "ಯಾರ ಮೇಲೆ ಆರೋಪ? ಸ್ವಯಂ A1, A2..."] },
-  { id: 6, title: ["Acts & Sections", "ಕಾಯ್ದೆಗಳು ಮತ್ತು ಸೆಕ್ಷನ್‌ಗಳು"], subtitle: ["Invoked statutes, cascading picker", "ಅನ್ವಯಿಸಿದ ಕಾಯ್ದೆಗಳು ಮತ್ತು ಸೆಕ್ಷನ್‌ಗಳು"] },
-  { id: 7, title: ["Review & Submit", "ಪರಿಶೀಲಿಸಿ ಮತ್ತು ಸಲ್ಲಿಸಿ"], subtitle: ["Confirm and file the FIR", "ದೃಢೀಕರಿಸಿ ಎಫ್‌ಐಆರ್ ದಾಖಲಿಸಿ"] },
+  {
+    id: 1,
+    title: "Case Basics",
+    subtitle: "Save the case row before related details are entered",
+  },
+  {
+    id: 2,
+    title: "Incident Details",
+    subtitle: "Facts, reporting date, incident window, and location",
+  },
+  {
+    id: 3,
+    title: "Complainant",
+    subtitle: "Person or entity that filed the complaint",
+  },
+  {
+    id: 4,
+    title: "Victims",
+    subtitle: "Victim names are stored in the Consolidated_Cases row",
+  },
+  {
+    id: 5,
+    title: "Accused",
+    subtitle: "Accused details unlock only after the case exists",
+  },
+  {
+    id: 6,
+    title: "Acts & Sections",
+    subtitle: "Statutes, sections, arrests, and chargesheet fields",
+  },
+  {
+    id: 7,
+    title: "Review & Submit",
+    subtitle: "Final save to local_db and Google Sheets sync trigger",
+  },
 ] as const;
 
-type FormState = Record<string, any>;
+const CASE_HEADERS = [
+  "CaseMasterID",
+  "CrimeNo",
+  "CaseNo",
+  "CrimeRegisteredDate",
+  "CrimeHead",
+  "CrimeSubHead",
+  "PoliceStation",
+  "PoliceStationType",
+  "District",
+  "Court",
+  "EmployeeID",
+  "Officer",
+  "OfficerRank",
+  "OfficerDesignation",
+  "Status",
+  "CaseCategory",
+  "Gravity",
+  "AccusedCount",
+  "AccusedNames",
+  "VictimCount",
+  "VictimNames",
+  "Complainant",
+  "ArrestCount",
+  "ChargesheetCount",
+  "LatestChargesheetDate",
+  "ChargesheetStatus",
+  "Acts",
+  "Sections",
+  "InfoReceivedPSDate",
+  "IncidentFromDate",
+  "IncidentToDate",
+  "Latitude",
+  "Longitude",
+  "BriefFacts",
+];
 
-const initialForm: FormState = {
-  crimeNo: "204430000202600099",
-  registeredDate: "08-07-2026",
-  station: "",
-  io: "",
-  category: "Non-Heinous",
-  gravity: "Non-Heinous",
-  crimeHead: "Offences Against Property",
-  crimeSubHead: "Theft",
-  lat: "12.9716",
-  lng: "77.5946",
+type FormState = Record<string, string>;
+
+type SaveState = {
+  status: "idle" | "saving" | "saved" | "error";
+  message: string;
 };
 
-const Section: React.FC<{ children: React.ReactNode; title?: string }> = ({
-  children,
+const emptyForm = (): FormState => ({
+  CaseMasterID: "",
+  CrimeNo: "",
+  CaseNo: "",
+  CrimeRegisteredDate: todayIso(),
+  CrimeHead: "",
+  CrimeSubHead: "",
+  PoliceStation: "",
+  PoliceStationType: "Police Station",
+  District: "Bangalore Urban",
+  Court: "",
+  EmployeeID: "",
+  Officer: "",
+  OfficerRank: "",
+  OfficerDesignation: "Investigating Officer (IO)",
+  Status: "Under Investigation",
+  CaseCategory: "FIR",
+  Gravity: "Non-Heinous",
+  AccusedCount: "0",
+  AccusedNames: "",
+  VictimCount: "0",
+  VictimNames: "",
+  Complainant: "",
+  ArrestCount: "0",
+  ChargesheetCount: "0",
+  LatestChargesheetDate: "",
+  ChargesheetStatus: "Pending",
+  Acts: "",
+  Sections: "",
+  InfoReceivedPSDate: "",
+  IncidentFromDate: "",
+  IncidentToDate: "",
+  Latitude: "",
+  Longitude: "",
+  BriefFacts: "",
+});
+
+const toForm = (record?: CaseRecord): FormState => {
+  const base = emptyForm();
+  if (!record) return base;
+  for (const header of CASE_HEADERS) {
+    base[header] = record[header] || "";
+  }
+  return base;
+};
+
+const buildPayload = (form: FormState): CaseRecord => {
+  const payload: CaseRecord = {};
+  for (const header of CASE_HEADERS) {
+    payload[header] = form[header] || "";
+  }
+  payload.AccusedNames = joinNames(splitNames(payload.AccusedNames));
+  payload.VictimNames = joinNames(splitNames(payload.VictimNames));
+  payload.AccusedCount = String(splitNames(payload.AccusedNames).length);
+  payload.VictimCount = String(splitNames(payload.VictimNames).length);
+  return payload;
+};
+
+const inputClass =
+  "w-full bg-shell border border-line rounded-lg px-3 py-2 text-sm text-white placeholder-muted outline-none focus:border-brand/50 focus:ring-2 focus:ring-brand/15 disabled:opacity-55 disabled:cursor-not-allowed";
+
+const Section: React.FC<{ title?: string; children: React.ReactNode }> = ({
   title,
+  children,
 }) => (
-  <div className="mb-4">
+  <div className="mb-5">
     {title && (
-      <label className="block text-xs text-muted mb-1.5 uppercase tracking-wide">
+      <div className="text-xs text-muted mb-2 uppercase tracking-wide">
         {title}
-      </label>
+      </div>
     )}
     {children}
   </div>
@@ -46,94 +178,250 @@ const Field: React.FC<{
   children: React.ReactNode;
   hint?: string;
 }> = ({ label, children, hint }) => (
-  <div>
-    <label className="block text-xs text-muted mb-1.5">{label}</label>
+  <label className="block">
+    <span className="block text-xs text-muted mb-1.5">{label}</span>
     {children}
-    {hint && <p className="text-[11px] text-muted mt-1">{hint}</p>}
-  </div>
+    {hint && <span className="block text-[11px] text-muted mt-1">{hint}</span>}
+  </label>
 );
 
-const inputClass =
-  "w-full bg-shell border border-line rounded-lg px-3 py-2 text-sm text-white placeholder-muted outline-none focus:border-brand/50 focus:ring-2 focus:ring-brand/15";
+const OptionInput: React.FC<{
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  field: string;
+  placeholder?: string;
+  disabled?: boolean;
+}> = ({ label, value, onChange, options, field, placeholder, disabled }) => {
+  const listId = `${field}-options`;
+  return (
+    <Field label={label}>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        list={listId}
+        placeholder={placeholder}
+        disabled={disabled}
+        className={inputClass}
+      />
+      <datalist id={listId}>
+        {options.map((item) => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
+    </Field>
+  );
+};
+
+const namesFromTextarea = (value: string) => joinNames(value.split(/\n|;/));
+const textareaFromNames = (value: string) => splitNames(value).join("\n");
+
+const syncMessage = (sync: { ok: boolean; skipped?: boolean; message?: string; stderr?: string }) => {
+  if (sync.ok) return sync.skipped ? "Local save complete. Sync was skipped." : "Local save complete. Google sync script ran.";
+  return `Local save complete, but Google sync needs attention: ${sync.stderr || sync.message || "script failed"}`;
+};
 
 const NewFIR: React.FC = () => {
-  const { language, tr } = useLanguage();
+  const { tr } = useLanguage();
+  const navigate = useNavigate();
+  const { id } = useParams();
+  const editing = Boolean(id);
+  const { cases, options, loading, error, reload } = useCases();
+
+  const existingCase = useMemo(() => findCase(cases, id), [cases, id]);
+  const [loadedKey, setLoadedKey] = useState("");
+  const [form, setForm] = useState<FormState>(() => emptyForm());
   const [step, setStep] = useState(1);
+  const [highestUnlocked, setHighestUnlocked] = useState(editing ? STEPS.length : 1);
+  const [persistedCaseId, setPersistedCaseId] = useState("");
   const [complaint, setComplaint] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiReady, setAiReady] = useState(false);
-  const [form, setForm] = useState<FormState>(initialForm);
-  const navigate = useNavigate();
+  const [saveState, setSaveState] = useState<SaveState>({
+    status: "idle",
+    message: "",
+  });
+
+  useEffect(() => {
+    if (!editing || !existingCase) return;
+    const key = caseKey(existingCase);
+    if (key && key !== loadedKey) {
+      setForm(toForm(existingCase));
+      setPersistedCaseId(key);
+      setHighestUnlocked(STEPS.length);
+      setLoadedKey(key);
+    }
+  }, [editing, existingCase, loadedKey]);
+
+  const persisted = Boolean(persistedCaseId || form.CaseMasterID);
   const meta = STEPS[step - 1];
-  const stepText = (pair: readonly [string, string]) => pair[language === "kn" ? 1 : 0];
+  const accusedCount = splitNames(form.AccusedNames).length;
+  const victimCount = splitNames(form.VictimNames).length;
 
-  const update = (k: string, v: any) => setForm((f) => ({ ...f, [k]: v }));
+  const update = (field: string, value: string) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setSaveState((current) =>
+      current.status === "saved" ? { status: "idle", message: "" } : current,
+    );
+  };
 
-  const go = (dir: 1 | -1) =>
-    setStep((s) => Math.min(STEPS.length, Math.max(1, s + dir)));
+  const saveCurrentStep = async () => {
+    if (!form.CrimeRegisteredDate || !form.PoliceStation || !form.CrimeHead) {
+      setSaveState({
+        status: "error",
+        message: "CrimeRegisteredDate, PoliceStation, and CrimeHead are required before the case row can be saved.",
+      });
+      return null;
+    }
+
+    setSaveState({ status: "saving", message: "Saving to local_db..." });
+    try {
+      const result = await saveCase(buildPayload(form), persistedCaseId || form.CaseMasterID || undefined);
+      const nextForm = toForm(result.case);
+      const nextKey = caseKey(result.case);
+      setForm(nextForm);
+      setPersistedCaseId(nextKey);
+      setLoadedKey(nextKey);
+      setSaveState({ status: result.sync.ok ? "saved" : "error", message: syncMessage(result.sync) });
+      await reload();
+      return result;
+    } catch (err) {
+      setSaveState({
+        status: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  };
+
+  const goNext = async () => {
+    const result = await saveCurrentStep();
+    if (!result) return;
+    setHighestUnlocked((current) => Math.max(current, Math.min(STEPS.length, step + 1)));
+    setStep((current) => Math.min(STEPS.length, current + 1));
+  };
+
+  const submit = async () => {
+    const result = await saveCurrentStep();
+    if (result) {
+      navigate(`/fir/${caseRoute(result.case)}`);
+    }
+  };
 
   const generateDraft = () => {
     if (!complaint.trim()) return;
     setAiLoading(true);
     window.setTimeout(() => {
-      const kannada = /[\u0C80-\u0CFF]/.test(complaint);
-      setForm((f) => ({
-        ...f,
-        brief: complaint,
-        place: kannada ? "ವೈಟ್‌ಫೀಲ್ಡ್, ಬೆಂಗಳೂರು" : "Whitefield, Bengaluru",
-        crimeHead: "Offences Against Property",
-        crimeSubHead: "Cheating",
-        complainants: [{ name: kannada ? "ಅನನ್ಯ ರಾವ್" : "Ananya Rao", age: "", gender: "Female", contact: "", address: "" }],
-        accused: [{ name: "", age: "Unknown", gender: "Male", contact: "", address: "Unknown" }],
-        acts: [{ act: "BNS 2023", section: "318(4)", notes: "Cheating" }, { act: "IT Act", section: "66D", notes: "Personation using communication device" }],
+      setForm((current) => ({
+        ...current,
+        BriefFacts: complaint,
+        CrimeHead: current.CrimeHead || "Cyber Crime",
+        CrimeSubHead: current.CrimeSubHead || "Online Financial Fraud",
+        Complainant: current.Complainant || "Ananya Rao",
+        AccusedNames: current.AccusedNames || "Unknown",
+        Acts: current.Acts || "BNS; IT Act",
+        Sections: current.Sections || "318(4); 66D",
       }));
       setAiReady(true);
       setAiLoading(false);
-    }, 650);
+    }, 500);
   };
+
+  const stationOptions = optionList(options, "PoliceStation");
+  const crimeHeadOptions = optionList(options, "CrimeHead");
+  const crimeSubHeadOptions = subHeadOptions(options, form.CrimeHead);
+
+  if (loading && editing && !existingCase) {
+    return <div className="p-6 text-sm text-muted">Loading case from local_db...</div>;
+  }
+
+  if (error && editing && !existingCase) {
+    return <div className="p-6 text-sm text-rose">{error}</div>;
+  }
+
+  if (editing && !loading && !existingCase) {
+    return <div className="p-6 text-sm text-muted">Case not found in Consolidated_Cases.csv.</div>;
+  }
 
   return (
     <div className="min-h-full bg-ink text-white">
-      {/* Sub-header */}
-      <div className="px-6 py-3 border-b border-line bg-ink flex items-center">
-        <h2 className="text-white text-sm font-medium">Fir</h2>
+      <div className="px-6 py-3 border-b border-line bg-ink flex items-center justify-between gap-4">
+        <h2 className="text-white text-sm font-medium">
+          {editing ? "Edit FIR" : "New FIR"}
+        </h2>
+        <div className="text-xs text-muted">
+          Source: <span className="text-white">local_db/Consolidated_Cases.csv</span>
+        </div>
       </div>
 
       <div className="px-6 pt-6">
         <div className="max-w-6xl mx-auto bg-shell border border-line rounded-2xl p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-lg font-semibold text-white">{tr("AI FIR Draft Assistant", "ಎಐ ಎಫ್‌ಐಆರ್ ಕರಡು ಸಹಾಯಕ")}</h1>
-              <p className="text-xs text-muted mt-1">{tr("Type the complaint in English or Kannada. AI prepares a reviewable draft and pre-fills the FIR form below.", "ದೂರನ್ನು ಇಂಗ್ಲಿಷ್ ಅಥವಾ ಕನ್ನಡದಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ. ಎಐ ಪರಿಶೀಲಿಸಬಹುದಾದ ಕರಡು ಸಿದ್ಧಪಡಿಸಿ ಕೆಳಗಿನ ಎಫ್‌ಐಆರ್ ಫಾರ್ಮ್ ಅನ್ನು ಪೂರ್ವಭರ್ತಿ ಮಾಡುತ್ತದೆ.")}</p>
+              <h1 className="text-lg font-semibold text-white">
+                {tr("AI FIR Draft Assistant", "AI FIR Draft Assistant")}
+              </h1>
+              <p className="text-xs text-muted mt-1">
+                Enter a complaint draft, then save case details in CSV order. Each step writes back to local_db and runs the sync script.
+              </p>
             </div>
-            <span className="text-[10px] border border-line rounded-full px-2.5 py-1 text-muted">{aiReady ? tr("Draft applied", "ಕರಡು ಅನ್ವಯಿಸಲಾಗಿದೆ") : tr("Optional", "ಐಚ್ಛಿಕ")}</span>
+            <span className="text-[10px] border border-line rounded-full px-2.5 py-1 text-muted">
+              {persisted ? `Case saved: ${form.CaseMasterID || persistedCaseId}` : "Case not saved yet"}
+            </span>
           </div>
+
           <div className="grid lg:grid-cols-[1fr_auto] gap-3 mt-4 items-stretch">
-            <textarea value={complaint} onChange={(e) => setComplaint(e.target.value)} rows={3} lang="kn" placeholder={tr("Describe what happened, who reported it, where and when...", "ಏನಾಯಿತು, ಯಾರು ವರದಿ ಮಾಡಿದರು, ಎಲ್ಲಿ ಮತ್ತು ಯಾವಾಗ ಎಂಬುದನ್ನು ವಿವರಿಸಿ...")} className="w-full resize-none bg-panel border border-line rounded-xl p-3 text-sm text-white placeholder-muted outline-none focus:border-brand/50" />
-            <button type="button" onClick={generateDraft} disabled={!complaint.trim() || aiLoading} className="lg:w-48 rounded-xl bg-brand px-5 py-3 text-sm font-medium text-white disabled:opacity-40">{aiLoading ? tr("Analysing...", "ವಿಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...") : tr("Generate & pre-fill", "ರಚಿಸಿ ಮತ್ತು ಭರ್ತಿ ಮಾಡಿ")}</button>
+            <textarea
+              value={complaint}
+              onChange={(event) => setComplaint(event.target.value)}
+              rows={3}
+              placeholder="Describe what happened, who reported it, where and when..."
+              className="w-full resize-none bg-panel border border-line rounded-xl p-3 text-sm text-white placeholder-muted outline-none focus:border-brand/50"
+            />
+            <button
+              type="button"
+              onClick={generateDraft}
+              disabled={!complaint.trim() || aiLoading}
+              className="lg:w-48 rounded-xl bg-brand px-5 py-3 text-sm font-medium text-white disabled:opacity-40"
+            >
+              {aiLoading ? "Analysing..." : aiReady ? "Refresh draft" : "Generate draft"}
+            </button>
           </div>
-          <p className="text-[10px] text-muted mt-2">{tr("AI suggestions are draft assistance only. The officer must verify every field and legal section before filing.", "ಎಐ ಸಲಹೆಗಳು ಕರಡು ಸಹಾಯ ಮಾತ್ರ. ದಾಖಲಿಸುವ ಮೊದಲು ಅಧಿಕಾರಿ ಪ್ರತಿಯೊಂದು ಕ್ಷೇತ್ರ ಮತ್ತು ಕಾನೂನು ಸೆಕ್ಷನ್ ಅನ್ನು ಪರಿಶೀಲಿಸಬೇಕು.")}</p>
+
+          {saveState.message && (
+            <div
+              className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+                saveState.status === "error"
+                  ? "border-amber/30 bg-amber/10 text-amber"
+                  : "border-sage/30 bg-sage/10 text-sage"
+              }`}
+            >
+              {saveState.message}
+            </div>
+          )}
         </div>
       </div>
 
       <div className="flex mt-4">
-        {/* Steps rail */}
         <aside className="w-72 shrink-0 border-r border-line bg-ink sticky top-0 self-start py-8 px-6">
           <div className="space-y-1">
-            {STEPS.map((s) => {
-              const active = step === s.id;
-              const done = step > s.id;
+            {STEPS.map((item) => {
+              const active = step === item.id;
+              const done = step > item.id;
+              const locked = item.id > highestUnlocked;
               return (
                 <button
-                  key={s.id}
-                  onClick={() => setStep(s.id)}
+                  key={item.id}
+                  onClick={() => !locked && setStep(item.id)}
+                  disabled={locked}
                   className={`new-fir-step w-full text-left rounded-xl px-3 py-3 transition border ${
                     active
                       ? "bg-brand/10 border-brand/40"
                       : done
                       ? "border-sage/30 bg-sage/5 hover:bg-sage/10"
                       : "border-transparent hover:bg-panel"
-                  }`}
+                  } ${locked ? "opacity-45 cursor-not-allowed" : ""}`}
                 >
                   <div className="flex items-start gap-3">
                     <div
@@ -145,17 +433,13 @@ const NewFIR: React.FC = () => {
                           : "bg-panel text-muted border border-line"
                       }`}
                     >
-                      {done ? "✓" : s.id}
+                      {done ? "OK" : item.id}
                     </div>
                     <div className="min-w-0">
-                      <div
-                        className={`text-sm font-medium ${
-                          active ? "text-white" : "text-muted"
-                        }`}
-                      >
-                        {stepText(s.title)}
+                      <div className={`text-sm font-medium ${active ? "text-white" : "text-muted"}`}>
+                        {item.title}
                       </div>
-                      <div className="text-[11px] text-muted mt-0.5">{stepText(s.subtitle)}</div>
+                      <div className="text-[11px] text-muted mt-0.5">{item.subtitle}</div>
                     </div>
                   </div>
                 </button>
@@ -164,54 +448,82 @@ const NewFIR: React.FC = () => {
           </div>
         </aside>
 
-        {/* Form panel */}
         <section className="flex-1 px-8 py-8 min-h-[calc(100vh-4rem)]">
-          <div className="max-w-3xl">
+          <div className="max-w-4xl">
             <div className="flex items-start justify-between mb-6">
               <div>
                 <h1 className="text-2xl font-schibsted text-white font-semibold">
-                  {stepText(meta.title)}
+                  {meta.title}
                 </h1>
-                <p className="text-muted text-sm mt-1">{stepText(meta.subtitle)}</p>
+                <p className="text-muted text-sm mt-1">{meta.subtitle}</p>
               </div>
               <div className="text-xs text-muted">
-                {tr("Step", "ಹಂತ")} <span className="text-white font-semibold">{step}</span> {tr("of", "ರಲ್ಲಿ")} {STEPS.length}
+                Step <span className="text-white font-semibold">{step}</span> of {STEPS.length}
               </div>
             </div>
 
             <div className="bg-shell/40 border border-line rounded-2xl p-6">
-              {step === 1 && <Step1 form={form} update={update} />}
+              {step === 1 && (
+                <Step1
+                  form={form}
+                  update={update}
+                  options={options}
+                  stationOptions={stationOptions}
+                  crimeHeadOptions={crimeHeadOptions}
+                  crimeSubHeadOptions={crimeSubHeadOptions}
+                />
+              )}
               {step === 2 && <Step2 form={form} update={update} />}
               {step === 3 && <Step3 form={form} update={update} />}
-              {step === 4 && <Step4 form={form} update={update} />}
-              {step === 5 && <Step5 form={form} update={update} />}
-              {step === 6 && <Step6 form={form} update={update} />}
-              {step === 7 && <Step7 form={form} />}
+              {step === 4 && <Step4 form={form} update={update} victimCount={victimCount} />}
+              {step === 5 && (
+                <Step5
+                  form={form}
+                  update={update}
+                  disabled={!persisted}
+                  accusedCount={accusedCount}
+                />
+              )}
+              {step === 6 && <Step6 form={form} update={update} options={options} />}
+              {step === 7 && <Step7 form={form} persisted={persisted} />}
             </div>
 
-            <div className="mt-5 flex items-center justify-between">
+            <div className="mt-5 flex items-center justify-between gap-3">
               <button
-                onClick={() => go(-1)}
-                disabled={step === 1}
+                onClick={() => setStep((current) => Math.max(1, current - 1))}
+                disabled={step === 1 || saveState.status === "saving"}
                 className="text-sm text-muted hover:text-white disabled:opacity-40 px-3 py-2"
               >
-                ← {tr("Previous", "ಹಿಂದಿನದು")}
+                &lt;- Previous
               </button>
-              {step < STEPS.length ? (
+
+              <div className="flex items-center gap-3">
                 <button
-                  onClick={() => go(1)}
-                  className="bg-brand text-white text-sm font-medium px-5 py-2 rounded-lg hover:bg-brand/90 shadow-glow"
+                  onClick={saveCurrentStep}
+                  disabled={saveState.status === "saving"}
+                  className="h-10 px-4 rounded-lg border border-line text-sm text-muted hover:text-white disabled:opacity-40"
                 >
-                  {tr("Continue", "ಮುಂದುವರಿಸಿ")} →
+                  {saveState.status === "saving" ? "Saving..." : "Save step"}
                 </button>
-              ) : (
-                <button
-                  onClick={() => navigate("/fir")}
-                  className="bg-sage text-white text-sm font-medium px-5 py-2 rounded-lg hover:bg-sage/90"
-                >
-                  {tr("Submit FIR", "ಎಫ್‌ಐಆರ್ ಸಲ್ಲಿಸಿ")}
-                </button>
-              )}
+
+                {step < STEPS.length ? (
+                  <button
+                    onClick={goNext}
+                    disabled={saveState.status === "saving"}
+                    className="bg-brand text-white text-sm font-medium px-5 py-2 rounded-lg hover:bg-brand/90 shadow-glow disabled:opacity-40"
+                  >
+                    Save & continue -&gt;
+                  </button>
+                ) : (
+                  <button
+                    onClick={submit}
+                    disabled={saveState.status === "saving"}
+                    className="bg-sage text-white text-sm font-medium px-5 py-2 rounded-lg hover:bg-sage/90 disabled:opacity-40"
+                  >
+                    Submit FIR
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </section>
@@ -222,117 +534,204 @@ const NewFIR: React.FC = () => {
 
 export default NewFIR;
 
-/* ---------- Steps ---------- */
+const Step1: React.FC<{
+  form: FormState;
+  update: (field: string, value: string) => void;
+  options: CaseOptions;
+  stationOptions: string[];
+  crimeHeadOptions: string[];
+  crimeSubHeadOptions: string[];
+}> = ({ form, update, options, stationOptions, crimeHeadOptions, crimeSubHeadOptions }) => (
+  <>
+    <Section title="Case identity">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Field label="CaseMasterID">
+          <input value={form.CaseMasterID} readOnly placeholder="Assigned on save" className={inputClass} />
+        </Field>
+        <Field label="CaseNo">
+          <input
+            value={form.CaseNo}
+            onChange={(event) => update("CaseNo", event.target.value)}
+            placeholder="Assigned on save if blank"
+            className={inputClass}
+          />
+        </Field>
+        <Field label="CrimeNo">
+          <input
+            value={form.CrimeNo}
+            onChange={(event) => update("CrimeNo", event.target.value)}
+            placeholder="Assigned on save if blank"
+            className={inputClass}
+          />
+        </Field>
+      </div>
+    </Section>
 
-const Step1: React.FC<{ form: FormState; update: (k: string, v: any) => void }> = ({
+    <Section title="Case basics">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="CrimeRegisteredDate">
+          <input
+            type="date"
+            value={form.CrimeRegisteredDate}
+            onChange={(event) => update("CrimeRegisteredDate", event.target.value)}
+            className={inputClass}
+          />
+        </Field>
+        <OptionInput
+          label="PoliceStation"
+          field="PoliceStation"
+          value={form.PoliceStation}
+          onChange={(value) => update("PoliceStation", value)}
+          options={stationOptions}
+          placeholder="Select or type station"
+        />
+        <OptionInput
+          label="PoliceStationType"
+          field="PoliceStationType"
+          value={form.PoliceStationType}
+          onChange={(value) => update("PoliceStationType", value)}
+          options={optionList(options, "PoliceStationType")}
+        />
+        <OptionInput
+          label="District"
+          field="District"
+          value={form.District}
+          onChange={(value) => update("District", value)}
+          options={optionList(options, "District")}
+        />
+        <OptionInput
+          label="CrimeHead"
+          field="CrimeHead"
+          value={form.CrimeHead}
+          onChange={(value) => {
+            update("CrimeHead", value);
+            update("CrimeSubHead", "");
+          }}
+          options={crimeHeadOptions}
+          placeholder="Required"
+        />
+        <OptionInput
+          label="CrimeSubHead"
+          field="CrimeSubHead"
+          value={form.CrimeSubHead}
+          onChange={(value) => update("CrimeSubHead", value)}
+          options={crimeSubHeadOptions}
+        />
+        <OptionInput
+          label="CaseCategory"
+          field="CaseCategory"
+          value={form.CaseCategory}
+          onChange={(value) => update("CaseCategory", value)}
+          options={optionList(options, "CaseCategory")}
+        />
+        <OptionInput
+          label="Gravity"
+          field="Gravity"
+          value={form.Gravity}
+          onChange={(value) => update("Gravity", value)}
+          options={optionList(options, "Gravity")}
+        />
+        <OptionInput
+          label="Status"
+          field="Status"
+          value={form.Status}
+          onChange={(value) => update("Status", value)}
+          options={optionList(options, "Status")}
+        />
+        <OptionInput
+          label="Court"
+          field="Court"
+          value={form.Court}
+          onChange={(value) => update("Court", value)}
+          options={optionList(options, "Court")}
+        />
+      </div>
+    </Section>
+
+    <Section title="Officer assignment">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="EmployeeID">
+          <input
+            value={form.EmployeeID}
+            onChange={(event) => update("EmployeeID", event.target.value)}
+            className={inputClass}
+          />
+        </Field>
+        <OptionInput
+          label="Officer"
+          field="Officer"
+          value={form.Officer}
+          onChange={(value) => update("Officer", value)}
+          options={optionList(options, "Officer")}
+        />
+        <OptionInput
+          label="OfficerRank"
+          field="OfficerRank"
+          value={form.OfficerRank}
+          onChange={(value) => update("OfficerRank", value)}
+          options={optionList(options, "OfficerRank")}
+        />
+        <OptionInput
+          label="OfficerDesignation"
+          field="OfficerDesignation"
+          value={form.OfficerDesignation}
+          onChange={(value) => update("OfficerDesignation", value)}
+          options={optionList(options, "OfficerDesignation")}
+        />
+      </div>
+    </Section>
+  </>
+);
+
+const Step2: React.FC<{ form: FormState; update: (field: string, value: string) => void }> = ({
   form,
   update,
 }) => (
   <>
-    <Section title="Auto-generated Crimeno Preview">
-      <div className="bg-panel border border-line rounded-lg px-3 py-3 flex items-center justify-between">
-        <div className="text-white font-mono num">{form.crimeNo}</div>
-        <span className="text-[10px] uppercase tracking-wider text-muted">
-          Live preview
-        </span>
-      </div>
-      <p className="text-[11px] text-muted mt-2">
-        Format: <code className="text-brand">1 + DDDD + SSSS + YYYY + #####</code>{" "}
-        (district locked to <span className="text-white">0443 Bengaluru City</span>)
-      </p>
-    </Section>
-
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <Field label="Crime Registered Date">
+    <Field label="BriefFacts" hint="This maps directly to the BriefFacts column.">
+      <textarea
+        rows={6}
+        value={form.BriefFacts}
+        onChange={(event) => update("BriefFacts", event.target.value)}
+        className={inputClass}
+      />
+    </Field>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+      <Field label="InfoReceivedPSDate">
         <input
-          type="text"
-          value={form.registeredDate}
-          onChange={(e) => update("registeredDate", e.target.value)}
+          value={form.InfoReceivedPSDate}
+          onChange={(event) => update("InfoReceivedPSDate", event.target.value)}
+          placeholder="YYYY-MM-DD HH:MM:SS"
           className={inputClass}
         />
       </Field>
-      <Field label="Police Station">
-        <select
-          value={form.station}
-          onChange={(e) => update("station", e.target.value)}
+      <Field label="IncidentFromDate">
+        <input
+          value={form.IncidentFromDate}
+          onChange={(event) => update("IncidentFromDate", event.target.value)}
+          placeholder="YYYY-MM-DD HH:MM:SS"
           className={inputClass}
-        >
-          <option value="">Select station</option>
-          <option>Whitefield PS</option>
-          <option>Indiranagar PS</option>
-          <option>Cubbon Park PS</option>
-          <option>Yelahanka PS</option>
-        </select>
+        />
       </Field>
-      <Field label="Investigating Officer">
-        <select
-          value={form.io}
-          onChange={(e) => update("io", e.target.value)}
+      <Field label="IncidentToDate">
+        <input
+          value={form.IncidentToDate}
+          onChange={(event) => update("IncidentToDate", event.target.value)}
+          placeholder="YYYY-MM-DD HH:MM:SS"
           className={inputClass}
-        >
-          <option value="">Select IO</option>
-          <option>SI Suresh Kumar — Whitefield</option>
-          <option>ASI Rekha M — Whitefield</option>
-          <option>Inspector Anand Rao — Indiranagar</option>
-        </select>
+        />
       </Field>
-      <Field label="Case Category">
-        <select
-          value={form.category}
-          onChange={(e) => update("category", e.target.value)}
-          className={inputClass}
-        >
-          <option>Non-Heinous</option>
-          <option>Heinous</option>
-        </select>
-      </Field>
-      <Field label="Gravity">
-        <select
-          value={form.gravity}
-          onChange={(e) => update("gravity", e.target.value)}
-          className={inputClass}
-        >
-          <option>Non-Heinous</option>
-          <option>Heinous</option>
-        </select>
-      </Field>
-      <Field label="Crime Head">
-        <select
-          value={form.crimeHead}
-          onChange={(e) => update("crimeHead", e.target.value)}
-          className={inputClass}
-        >
-          <option>Offences Against Property</option>
-          <option>Offences Against Person</option>
-          <option>Local & Special Laws</option>
-        </select>
-      </Field>
-      <Field label="Crime Sub-Head">
-        <select
-          value={form.crimeSubHead}
-          onChange={(e) => update("crimeSubHead", e.target.value)}
-          className={inputClass}
-        >
-          <option>Theft</option>
-          <option>Robbery</option>
-          <option>Burglary</option>
-          <option>Cheating</option>
-        </select>
-      </Field>
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
       <Field label="Latitude">
         <input
-          value={form.lat}
-          onChange={(e) => update("lat", e.target.value)}
+          value={form.Latitude}
+          onChange={(event) => update("Latitude", event.target.value)}
           className={inputClass}
         />
       </Field>
       <Field label="Longitude">
         <input
-          value={form.lng}
-          onChange={(e) => update("lng", e.target.value)}
+          value={form.Longitude}
+          onChange={(event) => update("Longitude", event.target.value)}
           className={inputClass}
         />
       </Field>
@@ -340,328 +739,166 @@ const Step1: React.FC<{ form: FormState; update: (k: string, v: any) => void }> 
   </>
 );
 
-const Step2: React.FC<{ form: FormState; update: (k: string, v: any) => void }> = ({
+const Step3: React.FC<{ form: FormState; update: (field: string, value: string) => void }> = ({
   form,
   update,
 }) => (
+  <Field label="Complainant" hint="Consolidated_Cases stores one complainant text value.">
+    <input
+      value={form.Complainant}
+      onChange={(event) => update("Complainant", event.target.value)}
+      className={inputClass}
+    />
+  </Field>
+);
+
+const Step4: React.FC<{
+  form: FormState;
+  update: (field: string, value: string) => void;
+  victimCount: number;
+}> = ({ form, update, victimCount }) => (
   <>
-    <Field label="Brief facts of the case" hint="Plain-language summary (max 1000 chars).">
+    <Field label="VictimNames" hint="Enter one victim per line. The CSV stores them with semicolons.">
       <textarea
         rows={6}
-        value={form.brief ?? ""}
-        onChange={(e) => update("brief", e.target.value)}
-        placeholder="On 08-07-2026 at about 14:30 hrs, the complainant..."
+        value={textareaFromNames(form.VictimNames)}
+        onChange={(event) => update("VictimNames", namesFromTextarea(event.target.value))}
         className={inputClass}
       />
     </Field>
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-      <Field label="Incident from">
-        <input
-          type="datetime-local"
-          value={form.from ?? ""}
-          onChange={(e) => update("from", e.target.value)}
-          className={inputClass}
-        />
-      </Field>
-      <Field label="Incident to">
-        <input
-          type="datetime-local"
-          value={form.to ?? ""}
-          onChange={(e) => update("to", e.target.value)}
-          className={inputClass}
-        />
-      </Field>
-      <Field label="Place of occurrence">
-        <input
-          value={form.place ?? ""}
-          onChange={(e) => update("place", e.target.value)}
-          placeholder="e.g. ITPL Main Road, Whitefield"
-          className={inputClass}
-        />
-      </Field>
-      <Field label="Beat / Sub-division">
-        <input
-          value={form.beat ?? ""}
-          onChange={(e) => update("beat", e.target.value)}
-          placeholder="Whitefield Sector-7"
-          className={inputClass}
-        />
-      </Field>
+    <div className="text-xs text-muted mt-3">
+      VictimCount will be saved as <span className="text-white font-semibold">{victimCount}</span>.
     </div>
   </>
 );
 
-type Party = { name: string; age: string; gender: string; contact: string; address: string };
+const Step5: React.FC<{
+  form: FormState;
+  update: (field: string, value: string) => void;
+  disabled: boolean;
+  accusedCount: number;
+}> = ({ form, update, disabled, accusedCount }) => (
+  <>
+    {disabled && (
+      <div className="mb-4 rounded-lg border border-amber/30 bg-amber/10 text-amber text-sm px-4 py-3">
+        Save Case Basics first. Accused details cannot be entered until the case row exists.
+      </div>
+    )}
+    <Field label="AccusedNames" hint="Enter one accused per line. Unknown accused can be entered as Unknown.">
+      <textarea
+        rows={6}
+        value={textareaFromNames(form.AccusedNames)}
+        onChange={(event) => update("AccusedNames", namesFromTextarea(event.target.value))}
+        className={inputClass}
+        disabled={disabled}
+      />
+    </Field>
+    <div className="text-xs text-muted mt-3">
+      AccusedCount will be saved as <span className="text-white font-semibold">{accusedCount}</span>.
+    </div>
+  </>
+);
 
-const Step3: React.FC<{ form: FormState; update: (k: string, v: any) => void }> = ({
-  form,
-  update,
-}) => {
-  const list: Party[] = form.complainants ?? [{ name: "", age: "", gender: "Male", contact: "", address: "" }];
-  const set = (idx: number, p: Party) =>
-    update("complainants", list.map((x, i) => (i === idx ? p : x)));
-  const add = () =>
-    update("complainants", [...list, { name: "", age: "", gender: "Male", contact: "", address: "" }]);
-  const remove = (i: number) =>
-    update("complainants", list.filter((_, idx) => idx !== i));
-
-  return (
-    <>
-      {list.map((p, i) => (
-        <PartyBlock
-          key={i}
-          index={i}
-          party={p}
-          onChange={(np) => set(i, np)}
-          onRemove={list.length > 1 ? () => remove(i) : undefined}
-        />
-      ))}
-      <button onClick={add} className="text-brand text-sm mt-2 hover:text-brand/80">
-        + Add another complainant
-      </button>
-    </>
-  );
-};
-
-const Step4: React.FC<{ form: FormState; update: (k: string, v: any) => void }> = ({
-  form,
-  update,
-}) => {
-  const list: Party[] = form.victims ?? [{ name: "", age: "", gender: "Male", contact: "", address: "" }];
-  const set = (idx: number, p: Party) =>
-    update("victims", list.map((x, i) => (i === idx ? p : x)));
-  const add = () =>
-    update("victims", [...list, { name: "", age: "", gender: "Male", contact: "", address: "" }]);
-  const remove = (i: number) =>
-    update("victims", list.filter((_, idx) => idx !== i));
-
-  return (
-    <>
-      {list.map((p, i) => (
-        <PartyBlock
-          key={i}
-          index={i}
-          party={p}
-          onChange={(np) => set(i, np)}
-          onRemove={list.length > 1 ? () => remove(i) : undefined}
-        />
-      ))}
-      <button onClick={add} className="text-brand text-sm mt-2 hover:text-brand/80">
-        + Add another victim
-      </button>
-    </>
-  );
-};
-
-const Step5: React.FC<{ form: FormState; update: (k: string, v: any) => void }> = ({
-  form,
-  update,
-}) => {
-  const accused: Party[] = form.accused ?? [{ name: "", age: "Unknown", gender: "Male", contact: "", address: "Unknown" }];
-  const set = (idx: number, p: Party) =>
-    update("accused", accused.map((x, i) => (i === idx ? p : x)));
-  const add = () =>
-    update("accused", [...accused, { name: "", age: "Unknown", gender: "Male", contact: "", address: "Unknown" }]);
-  const remove = (i: number) =>
-    update("accused", accused.filter((_, idx) => idx !== i));
-
-  return (
-    <>
-      <p className="text-xs text-muted mb-3">
-        Unknown accused will be auto-labelled A1, A2, etc. Fill known details below.
-      </p>
-      {accused.map((p, i) => (
-        <PartyBlock
-          key={i}
-          index={i}
-          label={i === 0 ? "A1" : `A${i + 1}`}
-          party={p}
-          onChange={(np) => set(i, np)}
-          onRemove={accused.length > 1 ? () => remove(i) : undefined}
-        />
-      ))}
-      <button onClick={add} className="text-brand text-sm mt-2 hover:text-brand/80">
-        + Add accused
-      </button>
-    </>
-  );
-};
-
-const Step6: React.FC<{ form: FormState; update: (k: string, v: any) => void }> = ({
-  form,
-  update,
-}) => {
-  const acts: { act: string; section: string; notes?: string }[] =
-    form.acts ?? [
-      { act: "Indian Penal Code", section: "379", notes: "Theft" },
-    ];
-  const setList = (next: typeof acts) => update("acts", next);
-  const updateRow = (i: number, patch: Partial<(typeof acts)[number]>) =>
-    setList(acts.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
-  const addRow = () =>
-    setList([...acts, { act: "Indian Penal Code", section: "", notes: "" }]);
-  const removeRow = (i: number) => setList(acts.filter((_, idx) => idx !== i));
-
-  return (
-    <>
-      <Section title="Invoked acts & sections">
-        <div className="space-y-2">
-          {acts.map((a, i) => (
-            <div
-              key={i}
-              className="grid grid-cols-12 gap-2 items-center bg-panel border border-line rounded-lg px-3 py-2"
-            >
-              <select
-                value={a.act}
-                onChange={(e) => updateRow(i, { act: e.target.value })}
-                className="col-span-4 bg-shell border border-line rounded-md px-2 py-1.5 text-sm"
-              >
-                <option>Indian Penal Code</option>
-                <option>BNS 2023</option>
-                <option>CrPC</option>
-                <option>IT Act</option>
-                <option>Local & Special Laws</option>
-              </select>
-              <input
-                value={a.section}
-                onChange={(e) => updateRow(i, { section: e.target.value })}
-                placeholder="Section"
-                className="col-span-2 bg-shell border border-line rounded-md px-2 py-1.5 text-sm"
-              />
-              <input
-                value={a.notes ?? ""}
-                onChange={(e) => updateRow(i, { notes: e.target.value })}
-                placeholder="Short description"
-                className="col-span-5 bg-shell border border-line rounded-md px-2 py-1.5 text-sm"
-              />
-              <button
-                onClick={() => removeRow(i)}
-                disabled={acts.length === 1}
-                className="col-span-1 text-muted hover:text-rose text-sm disabled:opacity-30"
-                title="Remove"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-        <button onClick={addRow} className="text-brand text-sm mt-2 hover:text-brand/80">
-          + Add act / section
-        </button>
-      </Section>
-
-      <Field label="Cascading notes (auto-suggested from crime head)" hint="These update as you pick different heads above.">
-        <textarea
-          rows={4}
+const Step6: React.FC<{
+  form: FormState;
+  update: (field: string, value: string) => void;
+  options: CaseOptions;
+}> = ({ form, update, options }) => (
+  <>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <Field label="Acts" hint="Separate multiple acts with semicolons.">
+        <input
+          value={form.Acts}
+          onChange={(event) => update("Acts", joinNames(event.target.value.split(";")))}
+          list="Acts-options"
           className={inputClass}
-          value={form.cascade ?? "For Theft (IPC 379) the typical charge sheet includes property recovery, identification of accused, and statements under 161 CrPC."}
-          onChange={(e) => update("cascade", e.target.value)}
+        />
+        <datalist id="Acts-options">
+          {optionList(options, "Acts").map((value) => (
+            <option key={value} value={value} />
+          ))}
+        </datalist>
+      </Field>
+      <Field label="Sections" hint="Separate multiple sections with semicolons.">
+        <input
+          value={form.Sections}
+          onChange={(event) => update("Sections", joinNames(event.target.value.split(";")))}
+          list="Sections-options"
+          className={inputClass}
+        />
+        <datalist id="Sections-options">
+          {optionList(options, "Sections").map((value) => (
+            <option key={value} value={value} />
+          ))}
+        </datalist>
+      </Field>
+      <Field label="ArrestCount">
+        <input
+          value={form.ArrestCount}
+          onChange={(event) => update("ArrestCount", event.target.value)}
+          className={inputClass}
         />
       </Field>
-    </>
-  );
-};
+      <Field label="ChargesheetCount">
+        <input
+          value={form.ChargesheetCount}
+          onChange={(event) => update("ChargesheetCount", event.target.value)}
+          className={inputClass}
+        />
+      </Field>
+      <Field label="LatestChargesheetDate">
+        <input
+          type="date"
+          value={form.LatestChargesheetDate}
+          onChange={(event) => update("LatestChargesheetDate", event.target.value)}
+          className={inputClass}
+        />
+      </Field>
+      <OptionInput
+        label="ChargesheetStatus"
+        field="ChargesheetStatus"
+        value={form.ChargesheetStatus}
+        onChange={(value) => update("ChargesheetStatus", value)}
+        options={optionList(options, "ChargesheetStatus")}
+      />
+    </div>
+  </>
+);
 
-const Step7: React.FC<{ form: FormState }> = ({ form }) => {
-  const summary: [string, string][] = [
-    ["Crime No.", form.crimeNo],
-    ["Station", form.station || "Whitefield PS"],
-    ["IO", form.io || "SI Suresh Kumar"],
-    ["Category", form.category],
-    ["Gravity", form.gravity],
-    ["Crime Head", `${form.crimeHead} · ${form.crimeSubHead}`],
-    ["Place", form.place || "ITPL Main Road, Whitefield"],
-    [
-      "Coordinates",
-      form.lat && form.lng ? `${form.lat}, ${form.lng}` : "12.9716, 77.5946",
-    ],
+const Step7: React.FC<{ form: FormState; persisted: boolean }> = ({ form, persisted }) => {
+  const summary = [
+    ["CaseMasterID", form.CaseMasterID || "Assigned on save"],
+    ["CaseNo", form.CaseNo || "Assigned on save"],
+    ["CrimeNo", form.CrimeNo || "Assigned on save"],
+    ["PoliceStation", form.PoliceStation],
+    ["CrimeHead", form.CrimeHead],
+    ["CrimeSubHead", form.CrimeSubHead],
+    ["Complainant", form.Complainant],
+    ["VictimCount", String(splitNames(form.VictimNames).length)],
+    ["AccusedCount", String(splitNames(form.AccusedNames).length)],
+    ["Status", form.Status],
   ];
+
   return (
     <>
       <p className="text-sm text-muted mb-4">
-        Confirm the entries below. Filing the FIR generates a Crimeno and locks the
-        record for the IO of record.
+        Review the row before the final save. The final submit updates Consolidated_Cases.csv and runs import_data.py.
       </p>
 
+      {!persisted && (
+        <div className="mb-4 rounded-lg border border-amber/30 bg-amber/10 text-amber text-sm px-4 py-3">
+          Case Basics have not been saved yet.
+        </div>
+      )}
+
       <div className="bg-panel border border-line rounded-lg divide-y divide-line">
-        {summary.map(([k, v]) => (
-          <div key={k} className="grid grid-cols-3 px-4 py-2.5">
-            <div className="text-xs text-muted uppercase tracking-wide">{k}</div>
-            <div className="col-span-2 text-white text-sm">{v}</div>
+        {summary.map(([label, value]) => (
+          <div key={label} className="grid grid-cols-3 px-4 py-2.5">
+            <div className="text-xs text-muted uppercase tracking-wide">{label}</div>
+            <div className="col-span-2 text-white text-sm">{value || "-"}</div>
           </div>
         ))}
-      </div>
-
-      <div className="mt-5 bg-amber/10 border border-amber/30 text-amber text-sm rounded-lg px-4 py-3">
-        ⚠ Once submitted, this FIR becomes immutable and a unique Crimeno is reserved for
-        Bengaluru City District.
       </div>
     </>
   );
 };
-
-/* ---------- Reusable party block ---------- */
-const PartyBlock: React.FC<{
-  index: number;
-  party: Party;
-  label?: string;
-  onChange: (p: Party) => void;
-  onRemove?: () => void;
-}> = ({ index, party, label, onChange, onRemove }) => (
-  <div className="bg-panel border border-line rounded-xl p-4 mb-3">
-    <div className="flex items-center justify-between mb-3">
-      <div className="text-xs uppercase tracking-wider text-muted">
-        {label ?? `Party ${index + 1}`}
-      </div>
-      {onRemove && (
-        <button onClick={onRemove} className="text-xs text-muted hover:text-rose">
-          Remove
-        </button>
-      )}
-    </div>
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <Field label="Full name">
-        <input
-          value={party.name}
-          onChange={(e) => onChange({ ...party, name: e.target.value })}
-          className={inputClass}
-        />
-      </Field>
-      <Field label="Age">
-        <input
-          value={party.age}
-          onChange={(e) => onChange({ ...party, age: e.target.value })}
-          className={inputClass}
-        />
-      </Field>
-      <Field label="Gender">
-        <select
-          value={party.gender}
-          onChange={(e) => onChange({ ...party, gender: e.target.value })}
-          className={inputClass}
-        >
-          <option>Male</option>
-          <option>Female</option>
-          <option>Other</option>
-        </select>
-      </Field>
-      <Field label="Contact">
-        <input
-          value={party.contact}
-          onChange={(e) => onChange({ ...party, contact: e.target.value })}
-          className={inputClass}
-          placeholder="+91"
-        />
-      </Field>
-      <div className="md:col-span-2">
-        <Field label="Address">
-          <input
-            value={party.address}
-            onChange={(e) => onChange({ ...party, address: e.target.value })}
-            className={inputClass}
-          />
-        </Field>
-      </div>
-    </div>
-  </div>
-);

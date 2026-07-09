@@ -57,7 +57,7 @@ const App: React.FC = () => {
         <Route path="/fir" element={<FIRList />} />
         <Route path="/fir/new" element={<NewFIR />} />
         <Route path="/fir/:id" element={<FIRDetail />} />
-        <Route path="/fir/:id/edit" element={<FIRDetail />} />
+        <Route path="/fir/:id/edit" element={<NewFIR />} />
 
         <Route path="/search" element={<AdvancedSearch />} />
 
