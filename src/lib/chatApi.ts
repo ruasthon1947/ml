@@ -9,20 +9,14 @@ export async function askCopilot(params: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
-  if (!res.ok) throw new Error("Chat request failed");
-  const data = await res.json();
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok || !data?.ok) {
+    const serverMessage = data?.error || `HTTP ${res.status}`;
+    console.error("Chat API error:", serverMessage);
+    throw new Error(serverMessage);
+  }
+
   return data.answer;
 }
-export async function transcribeSpeech(
-  audioBase64: string
-): Promise<{ transcript: string; detectedLanguage: string }> {
-  const res = await fetch("/api/speech-to-text", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audioBase64 }),
-  });
-  if (!res.ok) throw new Error("Transcription failed");
-  return res.json();
-}
-
-

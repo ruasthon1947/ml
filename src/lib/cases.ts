@@ -35,6 +35,15 @@ export type CaseSaveResponse = {
   error?: string;
 };
 
+export type CasePullResponse = CasesResponse & {
+  pull: SyncResult;
+  writeResult?: {
+    pending?: boolean;
+    file?: string;
+    error?: unknown;
+  };
+};
+
 export type FirRecord = {
   id: string;
   label: string;
@@ -70,11 +79,12 @@ export async function fetchCases(): Promise<CasesResponse> {
 export async function saveCase(
   record: CaseRecord,
   caseId?: string,
+  options?: { skipSync?: boolean },
 ): Promise<CaseSaveResponse> {
   const response = await fetch(caseId ? api(`/cases/${encodeURIComponent(caseId)}`) : api("/cases"), {
     method: caseId ? "PATCH" : "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ case: record }),
+    body: JSON.stringify({ case: record, skipSync: Boolean(options?.skipSync) }),
   });
   return readJson<CaseSaveResponse>(response);
 }
@@ -82,6 +92,11 @@ export async function saveCase(
 export async function runCaseSync(): Promise<{ ok: boolean; sync: SyncResult }> {
   const response = await fetch(api("/cases/sync"), { method: "POST" });
   return readJson<{ ok: boolean; sync: SyncResult }>(response);
+}
+
+export async function pullCasesFromMaster(): Promise<CasePullResponse> {
+  const response = await fetch(api("/cases/pull"), { method: "POST" });
+  return readJson<CasePullResponse>(response);
 }
 
 export function useCases() {

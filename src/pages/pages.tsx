@@ -14,18 +14,21 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import Stub from "./Stub";
 import { useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import {
+  CaseRecord,
   FirRecord,
   caseRoute,
   countWhere,
   csvEscape,
   findCase,
   optionList,
+  pullCasesFromMaster,
   searchText,
+  splitNames,
   toFirRecord,
+  useCases,
   useFirRecords,
 } from "../lib/cases";
 
@@ -149,6 +152,149 @@ const Card: React.FC<{
   >
     {children}
   </div>
+);
+
+const textValue = (value: unknown) => String(value || "").trim();
+
+const uniqueText = (values: string[], fallback = "-") => {
+  const unique = Array.from(new Set(values.map(textValue).filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b)
+  );
+  return unique.length ? unique.join(", ") : fallback;
+};
+
+const countByValue = (
+  records: FirRecord[],
+  field: keyof CaseRecord,
+  split = false
+) => {
+  const counts = new Map<string, number>();
+  records.forEach((record) => {
+    const values = split ? splitNames(record.raw[field]) : [textValue(record.raw[field])];
+    values.filter(Boolean).forEach((value) => {
+      counts.set(value, (counts.get(value) || 0) + 1);
+    });
+  });
+  return Array.from(counts.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+};
+
+const groupByKey = (
+  records: FirRecord[],
+  keyFn: (record: FirRecord) => string
+) => {
+  const groups = new Map<string, FirRecord[]>();
+  records.forEach((record) => {
+    const key = textValue(keyFn(record));
+    if (!key) return;
+    groups.set(key, [...(groups.get(key) || []), record]);
+  });
+  return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b));
+};
+
+const ReferenceHeader: React.FC<{
+  title: string;
+  description: string;
+  loading: boolean;
+  error: string;
+  count: number;
+}> = ({ title, description, loading, error, count }) => (
+  <div>
+    <h1 className="text-xl font-semibold">{title}</h1>
+    <p className="text-sm text-muted mt-1">{description}</p>
+    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+      <span className="rounded-full border border-line bg-shell px-3 py-1 text-muted">
+        Source: local_db/Consolidated_Cases
+      </span>
+      <span className="rounded-full border border-line bg-shell px-3 py-1 text-muted">
+        {loading ? "Loading..." : `${count.toLocaleString("en-IN")} records loaded`}
+      </span>
+      {error && (
+        <span className="rounded-full border border-rose/30 bg-rose/10 px-3 py-1 text-rose">
+          {error}
+        </span>
+      )}
+    </div>
+  </div>
+);
+
+const ReferenceStat: React.FC<{
+  label: string;
+  value: number | string;
+  helper?: string;
+}> = ({ label, value, helper }) => (
+  <Card className="p-4">
+    <div className="text-xs text-muted">{label}</div>
+    <div className="mt-2 text-2xl font-semibold">{value}</div>
+    {helper && <div className="text-[11px] text-muted mt-1">{helper}</div>}
+  </Card>
+);
+
+const ReferenceTable: React.FC<{
+  columns: string[];
+  rows: Array<Array<React.ReactNode>>;
+  emptyText?: string;
+}> = ({ columns, rows, emptyText = "No reference data found." }) => (
+  <Card className="overflow-hidden">
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-line text-left text-[10px] uppercase text-muted">
+            {columns.map((column) => (
+              <th key={column} className="px-4 py-3 font-semibold">
+                {column}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="border-b border-line last:border-0">
+              {row.map((cell, cellIndex) => (
+                <td key={`${rowIndex}-${cellIndex}`} className="px-4 py-3 align-top">
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={columns.length} className="px-4 py-10 text-center text-muted">
+                {emptyText}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  </Card>
+);
+
+const ReferenceListCard: React.FC<{
+  title: string;
+  values: Array<{ name: string; count: number }>;
+}> = ({ title, values }) => (
+  <Card className="p-4">
+    <div className="flex items-center justify-between gap-3">
+      <div className="text-sm font-semibold">{title}</div>
+      <div className="text-xs text-muted">{values.length} values</div>
+    </div>
+    <div className="mt-4 max-h-72 overflow-auto space-y-2 pr-1">
+      {values.map((item) => (
+        <div
+          key={item.name}
+          className="flex items-start justify-between gap-4 rounded-lg border border-line bg-panel/40 px-3 py-2"
+        >
+          <span className="text-sm">{item.name}</span>
+          <span className="shrink-0 rounded-full border border-line px-2 py-0.5 text-[11px] text-muted">
+            {item.count}
+          </span>
+        </div>
+      ))}
+      {values.length === 0 && <div className="text-sm text-muted">No values found.</div>}
+    </div>
+  </Card>
 );
 
 /* =========================================================
@@ -866,6 +1012,7 @@ export const FIRDetail: React.FC = () => {
           </div>
         </Card>
       </div>
+
     </div>
   );
 };
@@ -1133,6 +1280,15 @@ export const AdvancedSearch: React.FC = () => {
 export const Reports: React.FC = () => {
   const t = useT();
   const { records, loading, error } = useFirRecords();
+  const closedStatuses = ["Charge Sheeted", "Disposed by Court", "Closed - False Case"];
+  const today = new Date();
+
+  const daysBetween = (from: string, to?: string) => {
+    const start = new Date(from);
+    const end = to ? new Date(to) : today;
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
+    return Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
+  };
 
   const monthly = useMemo(() => {
     const buckets = new Map<string, { m: string; fir: number; closed: number }>();
@@ -1143,7 +1299,7 @@ export const Reports: React.FC = () => {
       const label = date.toLocaleDateString("en-IN", { month: "short" });
       const bucket = buckets.get(key) || { m: label, fir: 0, closed: 0 };
       bucket.fir += 1;
-      if (["Charge Sheeted", "Disposed by Court", "Closed - False Case"].includes(record.status)) {
+      if (closedStatuses.includes(record.status)) {
         bucket.closed += 1;
       }
       buckets.set(key, bucket);
@@ -1178,12 +1334,73 @@ export const Reports: React.FC = () => {
       .map(([name, value]) => ({ name, value }));
   }, [records]);
 
+  const totalCases = records.length;
+  const closedCases = records.filter((record) => closedStatuses.includes(record.status));
+  const disposalRate = totalCases ? Math.round((closedCases.length / totalCases) * 1000) / 10 : 0;
+  const investigationDurations = records
+    .map((record) => daysBetween(record.date, record.raw.LatestChargesheetDate || undefined))
+    .filter((value): value is number => value !== null);
+  const avgInvestigationDays = investigationDurations.length
+    ? Math.round(
+        (investigationDurations.reduce((sum, value) => sum + value, 0) / investigationDurations.length) * 10
+      ) / 10
+    : 0;
+  const casesThisMonth = records.filter((record) => {
+    const date = new Date(record.date);
+    return (
+      Number.isFinite(date.getTime()) &&
+      date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth()
+    );
+  }).length;
+  const overdueCases = records.filter((record) => {
+    const age = daysBetween(record.date);
+    return age !== null && age > 30 && !closedStatuses.includes(record.status);
+  }).length;
+  const disposedWithin30 = closedCases.length
+    ? Math.round(
+        (closedCases.filter((record) => {
+          const age = daysBetween(record.date, record.raw.LatestChargesheetDate || undefined);
+          return age !== null && age <= 30;
+        }).length /
+          closedCases.length) *
+          100
+      )
+    : 0;
+  const chargeSheetsFiled = records.filter((record) => record.raw.ChargesheetStatus === "Filed").length;
+  const chargeSheetFiledRate = totalCases ? Math.round((chargeSheetsFiled / totalCases) * 100) : 0;
+  const investigationCurrentRate = totalCases ? Math.round(((totalCases - overdueCases) / totalCases) * 100) : 0;
+  const statusRows = countByValue(records, "Status").map((item) => [
+    item.name,
+    item.count.toLocaleString("en-IN"),
+    totalCases ? `${Math.round((item.count / totalCases) * 1000) / 10}%` : "0%",
+  ]);
+  const stationRows = station.map((item) => [
+    item.n,
+    item.v.toLocaleString("en-IN"),
+    totalCases ? `${Math.round((item.v / totalCases) * 1000) / 10}%` : "0%",
+  ]);
+
   const csv = () => {
     const rows = [
-      "Case,FIR,Category,Station,Status",
+      "Case,FIR,Category,Station,Status,Gravity,Registered,Officer,Complainant,Accused,Sections",
       ...records.map(
         (r) =>
-          [r.label, r.fir, r.category, r.station, r.status].map(csvEscape).join(",")
+          [
+            r.label,
+            r.fir,
+            r.category,
+            r.station,
+            r.status,
+            r.gravity,
+            r.date,
+            r.io,
+            r.complainant,
+            r.accused,
+            r.section,
+          ]
+            .map(csvEscape)
+            .join(",")
       ),
     ];
 
@@ -1251,25 +1468,25 @@ export const Reports: React.FC = () => {
               "Disposal rate",
               "ವಿಲೇವಾರಿ ದರ"
             ),
-            "72.4%",
+            loading ? "..." : `${disposalRate}%`,
           ],
           [
             t(
               "Avg. investigation",
               "ಸರಾಸರಿ ತನಿಖೆ"
             ),
-            "18.6 days",
+            loading ? "..." : `${avgInvestigationDays} days`,
           ],
           [
             t(
               "Cases this month",
               "ಈ ತಿಂಗಳ ಪ್ರಕರಣಗಳು"
             ),
-            "96",
+            loading ? "..." : casesThisMonth.toLocaleString("en-IN"),
           ],
           [
             t("Overdue", "ಬಾಕಿ"),
-            "12",
+            loading ? "..." : overdueCases.toLocaleString("en-IN"),
           ],
         ].map((x) => (
           <Card
@@ -1422,21 +1639,21 @@ export const Reports: React.FC = () => {
                   "Cases disposed within 30 days",
                   "30 ದಿನಗಳಲ್ಲಿ ವಿಲೇವಾರಿ"
                 ),
-                78,
+                disposedWithin30,
               ],
               [
                 t(
                   "Charge sheets filed on time",
                   "ಸಮಯಕ್ಕೆ ಚಾರ್ಜ್‌ಶೀಟ್"
                 ),
-                84,
+                chargeSheetFiledRate,
               ],
               [
                 t(
                   "Investigation updates current",
                   "ತನಿಖಾ ನವೀಕರಣ ಪ್ರಸ್ತುತ"
                 ),
-                91,
+                investigationCurrentRate,
               ],
             ].map((x) => (
               <div key={String(x[0])}>
@@ -1457,6 +1674,19 @@ export const Reports: React.FC = () => {
             ))}
           </div>
         </Card>
+      </div>
+
+      <div className="grid xl:grid-cols-2 gap-4">
+        <ReferenceTable
+          columns={["Status", "Cases", "Share"]}
+          rows={statusRows}
+          emptyText="No status data available."
+        />
+        <ReferenceTable
+          columns={["Top Station", "Cases", "Share"]}
+          rows={stationRows}
+          emptyText="No station workload data available."
+        />
       </div>
     </div>
   );
@@ -1481,33 +1711,175 @@ const ChartCard: React.FC<{
    REFERENCE PAGES
 ========================================================= */
 
-export const Employees = () => (
-  <Stub
-    title="Employees"
-    description="Directory of officers and staff."
-  />
-);
+export const Employees: React.FC = () => {
+  const { records, loading, error } = useFirRecords();
+  const groups = groupByKey(records, (record) => record.raw.EmployeeID || record.io);
+  const rows = groups.map(([key, employeeCases]) => {
+    const sample = employeeCases[0];
+    const active = employeeCases.filter((record) => record.status === "Under Investigation").length;
+    return [
+      <div>
+        <div className="font-semibold text-brand">{sample.raw.EmployeeID || key}</div>
+        <div className="text-xs text-muted mt-1">{sample.io || "Officer name not captured"}</div>
+      </div>,
+      uniqueText(employeeCases.map((record) => record.raw.OfficerRank)),
+      uniqueText(employeeCases.map((record) => record.raw.OfficerDesignation)),
+      uniqueText(employeeCases.map((record) => record.station), "-"),
+      employeeCases.length.toLocaleString("en-IN"),
+      active.toLocaleString("en-IN"),
+    ];
+  });
 
-export const MasterData = () => (
-  <Stub
-    title="Master Data"
-    description="Manage crime and statutory reference data."
-  />
-);
+  return (
+    <div className="p-5 space-y-4">
+      <ReferenceHeader
+        title="Employees"
+        description="Officer directory built from EmployeeID, officer name, rank, designation, and assigned cases."
+        loading={loading}
+        error={error}
+        count={records.length}
+      />
+      <div className="grid md:grid-cols-3 gap-3">
+        <ReferenceStat label="Employees" value={groups.length} helper="Unique employee IDs/officers" />
+        <ReferenceStat label="Ranks" value={countByValue(records, "OfficerRank").length} />
+        <ReferenceStat label="Designations" value={countByValue(records, "OfficerDesignation").length} />
+      </div>
+      <ReferenceTable
+        columns={["Employee", "Rank", "Designation", "Stations", "Cases", "Active"]}
+        rows={rows}
+      />
+    </div>
+  );
+};
 
-export const Units = () => (
-  <Stub
-    title="Units & Stations"
-    description="Police units and subdivisions."
-  />
-);
+export const MasterData: React.FC = () => {
+  const { records, loading, error } = useFirRecords();
+  const dataGroups = [
+    ["Crime Heads", countByValue(records, "CrimeHead")],
+    ["Crime Sub Heads", countByValue(records, "CrimeSubHead")],
+    ["Acts", countByValue(records, "Acts", true)],
+    ["Sections", countByValue(records, "Sections", true)],
+    ["Statuses", countByValue(records, "Status")],
+    ["Case Categories", countByValue(records, "CaseCategory")],
+    ["Gravity", countByValue(records, "Gravity")],
+    ["Chargesheet Status", countByValue(records, "ChargesheetStatus")],
+  ] as const;
 
-export const Courts = () => (
-  <Stub
-    title="Courts"
-    description="Court directories and case mappings."
-  />
-);
+  const totalValues = dataGroups.reduce((sum, [, values]) => sum + values.length, 0);
+
+  return (
+    <div className="p-5 space-y-4">
+      <ReferenceHeader
+        title="Master Data"
+        description="Crime, legal, status, category, and chargesheet reference values currently used by FIR records."
+        loading={loading}
+        error={error}
+        count={records.length}
+      />
+      <div className="grid md:grid-cols-4 gap-3">
+        <ReferenceStat label="Reference Values" value={totalValues} />
+        <ReferenceStat label="Crime Heads" value={dataGroups[0][1].length} />
+        <ReferenceStat label="Acts" value={dataGroups[2][1].length} />
+        <ReferenceStat label="Sections" value={dataGroups[3][1].length} />
+      </div>
+      <div className="grid xl:grid-cols-2 gap-4">
+        {dataGroups.map(([title, values]) => (
+          <ReferenceListCard key={title} title={title} values={values} />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+export const Units: React.FC = () => {
+  const { records, loading, error } = useFirRecords();
+  const groups = groupByKey(records, (record) => record.station);
+  const rows = groups.map(([station, stationCases]) => {
+    const active = stationCases.filter((record) => record.status === "Under Investigation").length;
+    return [
+      <div>
+        <div className="font-semibold text-brand">{station}</div>
+        <div className="text-xs text-muted mt-1">
+          {uniqueText(stationCases.map((record) => record.raw.PoliceStationType))}
+        </div>
+      </div>,
+      uniqueText(stationCases.map((record) => record.raw.District)),
+      uniqueText(stationCases.map((record) => record.raw.Court)),
+      stationCases.length.toLocaleString("en-IN"),
+      active.toLocaleString("en-IN"),
+    ];
+  });
+
+  return (
+    <div className="p-5 space-y-4">
+      <ReferenceHeader
+        title="Units & Stations"
+        description="Police station and unit reference data with current case workload."
+        loading={loading}
+        error={error}
+        count={records.length}
+      />
+      <div className="grid md:grid-cols-4 gap-3">
+        <ReferenceStat label="Stations" value={groups.length} />
+        <ReferenceStat label="Station Types" value={countByValue(records, "PoliceStationType").length} />
+        <ReferenceStat label="Districts" value={countByValue(records, "District").length} />
+        <ReferenceStat
+          label="Active Cases"
+          value={records.filter((record) => record.status === "Under Investigation").length}
+        />
+      </div>
+      <ReferenceTable
+        columns={["Station / Unit", "District", "Courts Used", "Cases", "Active"]}
+        rows={rows}
+      />
+    </div>
+  );
+};
+
+export const Courts: React.FC = () => {
+  const { records, loading, error } = useFirRecords();
+  const groups = groupByKey(records, (record) => record.raw.Court);
+  const rows = groups.map(([court, courtCases]) => {
+    const filed = courtCases.filter((record) => record.raw.ChargesheetStatus === "Filed").length;
+    const pendingTrial = courtCases.filter((record) => record.status === "Pending Trial").length;
+    return [
+      <div className="font-semibold text-brand">{court}</div>,
+      uniqueText(courtCases.map((record) => record.raw.District)),
+      uniqueText(courtCases.map((record) => record.station)),
+      courtCases.length.toLocaleString("en-IN"),
+      filed.toLocaleString("en-IN"),
+      pendingTrial.toLocaleString("en-IN"),
+    ];
+  });
+
+  return (
+    <div className="p-5 space-y-4">
+      <ReferenceHeader
+        title="Courts"
+        description="Court directory derived from FIR court mappings and chargesheet/trial status."
+        loading={loading}
+        error={error}
+        count={records.length}
+      />
+      <div className="grid md:grid-cols-4 gap-3">
+        <ReferenceStat label="Courts" value={groups.length} />
+        <ReferenceStat
+          label="Filed Chargesheets"
+          value={records.filter((record) => record.raw.ChargesheetStatus === "Filed").length}
+        />
+        <ReferenceStat
+          label="Pending Trial"
+          value={records.filter((record) => record.status === "Pending Trial").length}
+        />
+        <ReferenceStat label="Mapped Stations" value={countByValue(records, "PoliceStation").length} />
+      </div>
+      <ReferenceTable
+        columns={["Court", "District", "Stations", "Cases", "Filed CS", "Pending Trial"]}
+        rows={rows}
+      />
+    </div>
+  );
+};
 
 /* =========================================================
    SETTINGS
@@ -1544,6 +1916,36 @@ export const Settings: React.FC = () => {
 
   const [savedMessage, setSavedMessage] =
     useState("");
+
+  const { reload: reloadCases } = useCases();
+  const [pullState, setPullState] = useState<{
+    status: "idle" | "pulling" | "success" | "error";
+    message: string;
+  }>({ status: "idle", message: "" });
+
+  const pullFromMaster = async () => {
+    setPullState({
+      status: "pulling",
+      message: "Pulling latest cases from Google Master Sheet...",
+    });
+
+    try {
+      const data = await pullCasesFromMaster();
+      await reloadCases(true);
+      const count = data.cases?.length || 0;
+      setPullState({
+        status: "success",
+        message: data.writeResult?.pending
+          ? `Pulled ${count} cases into a pending local copy. Close Consolidated_Cases.csv and refresh once so it can be promoted.`
+          : `Pulled ${count} cases into local_db successfully.`,
+      });
+    } catch (err) {
+      setPullState({
+        status: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
 
   const save = () => {
     localStorage.setItem(
@@ -1760,6 +2162,45 @@ export const Settings: React.FC = () => {
               }
             />
           </div>
+        </Card>
+
+        <Card className="p-5 settings-card xl:col-span-2">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="font-semibold">
+                Master Sheet Sync
+              </h2>
+
+              <p className="text-xs text-muted mt-1">
+                Google Master Sheet -&gt; local_db
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={pullFromMaster}
+              disabled={pullState.status === "pulling"}
+              className="h-10 px-4 rounded-lg bg-brand text-white text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {pullState.status === "pulling"
+                ? "Syncing..."
+                : "Sync from Master Sheet"}
+            </button>
+          </div>
+
+          {pullState.message && (
+            <div
+              className={`mt-4 rounded-lg border px-3 py-2 text-xs ${
+                pullState.status === "error"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : pullState.status === "success"
+                    ? "border-green-200 bg-green-50 text-green-700"
+                    : "border-line bg-panel text-muted"
+              }`}
+            >
+              {pullState.message}
+            </div>
+          )}
         </Card>
 
         <Card className="p-5 settings-card xl:col-span-2">

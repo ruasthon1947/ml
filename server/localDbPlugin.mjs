@@ -4,7 +4,9 @@ import { spawnSync } from "node:child_process";
 
 const CSV_FILE = path.join(process.cwd(), "local_db", "Consolidated_Cases.csv");
 const DB_DIR = path.dirname(CSV_FILE);
+const PENDING_CSV_FILE = path.join(DB_DIR, "Consolidated_Cases.pending.csv");
 const IMPORT_SCRIPT = path.join(DB_DIR, "import_data.py");
+const EXPORT_SCRIPT = path.join(DB_DIR, "export_data.py");
 
 const OPTION_FIELDS = [
   "CrimeHead",
@@ -85,12 +87,90 @@ function stringifyCsv(headers, records) {
   return `${lines.join("\n")}\n`;
 }
 
-function readDatabase() {
-  if (!fs.existsSync(CSV_FILE)) {
-    throw new Error(`Missing CSV file at ${CSV_FILE}`);
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function replaceFileWithRetry(source, target, options = {}) {
+  let lastError = null;
+  const retryableCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
+  const attempts = options.attempts ?? 10;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!retryableCodes.has(error?.code)) {
+        throw error;
+      }
+      sleepSync(Math.min(60 + attempt * 30, 300));
+    }
   }
 
-  const text = fs.readFileSync(CSV_FILE, "utf8");
+  try {
+    fs.copyFileSync(source, target);
+    fs.unlinkSync(source);
+    return;
+  } catch (error) {
+    lastError = error;
+  }
+
+  try {
+    fs.writeFileSync(target, fs.readFileSync(source, "utf8"), "utf8");
+    fs.unlinkSync(source);
+    return;
+  } catch (error) {
+    lastError = error;
+  }
+
+  const details = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(
+    `Could not update Consolidated_Cases.csv because Windows is still locking it. ` +
+      `Close the CSV if it is open in Excel or another viewer, then try again. ` +
+      `A safe temp copy was kept at ${source}. Original error: ${details}`,
+  );
+}
+
+function fileMtime(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function promotePendingDatabase() {
+  if (!fs.existsSync(PENDING_CSV_FILE)) return false;
+  if (fileMtime(CSV_FILE) > fileMtime(PENDING_CSV_FILE)) return false;
+
+  try {
+    replaceFileWithRetry(PENDING_CSV_FILE, CSV_FILE, { attempts: 3 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function activeDatabaseFile() {
+  promotePendingDatabase();
+  if (fs.existsSync(PENDING_CSV_FILE) && fileMtime(PENDING_CSV_FILE) >= fileMtime(CSV_FILE)) {
+    return PENDING_CSV_FILE;
+  }
+  return CSV_FILE;
+}
+
+function hasPendingLocalData() {
+  return fs.existsSync(PENDING_CSV_FILE) && fileMtime(PENDING_CSV_FILE) >= fileMtime(CSV_FILE);
+}
+
+function readCsvFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Missing CSV file at ${filePath}`);
+  }
+
+  const text = fs.readFileSync(filePath, "utf8");
   const table = parseCsv(text);
   const headers = table[0] || [];
   const records = table.slice(1).filter((row) => row.some(Boolean)).map((row) => {
@@ -104,11 +184,39 @@ function readDatabase() {
   return { headers, records };
 }
 
+function readDatabase() {
+  return readCsvFile(activeDatabaseFile());
+}
+
 function writeDatabase(headers, records) {
   fs.mkdirSync(DB_DIR, { recursive: true });
   const tmp = path.join(DB_DIR, `Consolidated_Cases.${process.pid}.${Date.now()}.tmp`);
   fs.writeFileSync(tmp, stringifyCsv(headers, records), "utf8");
-  fs.renameSync(tmp, CSV_FILE);
+  try {
+    replaceFileWithRetry(tmp, CSV_FILE, { attempts: 8 });
+    if (fs.existsSync(PENDING_CSV_FILE)) {
+      try {
+        fs.unlinkSync(PENDING_CSV_FILE);
+      } catch {
+        // The pending copy is only a cache. If Windows keeps it for a moment,
+        // the next write/read will replace or promote it.
+      }
+    }
+    return { pending: false, file: CSV_FILE };
+  } catch (error) {
+    try {
+      replaceFileWithRetry(tmp, PENDING_CSV_FILE, { attempts: 8 });
+      return { pending: true, file: PENDING_CSV_FILE, error };
+    } catch (pendingError) {
+      throw new Error(
+        `Could not update local_db. Main CSV error: ${
+          error instanceof Error ? error.message : String(error)
+        }. Pending CSV error: ${
+          pendingError instanceof Error ? pendingError.message : String(pendingError)
+        }`,
+      );
+    }
+  }
 }
 
 function normalizeValue(value) {
@@ -204,29 +312,54 @@ function buildOptions(records) {
   return options;
 }
 
-function runImportData() {
-  if (!fs.existsSync(IMPORT_SCRIPT)) {
+function pythonCandidates(scriptFile, scriptArgs = []) {
+  const envPython = process.env.LOCAL_DB_PYTHON || process.env.PYTHON;
+  const bundledPython =
+    process.platform === "win32"
+      ? path.resolve(path.dirname(process.execPath), "..", "..", "python", "python.exe")
+      : path.resolve(path.dirname(process.execPath), "..", "..", "python", "bin", "python");
+  const rawCandidates = [
+    envPython && { cmd: envPython, args: [scriptFile, ...scriptArgs] },
+    fs.existsSync(bundledPython) && { cmd: bundledPython, args: [scriptFile, ...scriptArgs] },
+    ...(process.platform === "win32"
+      ? [
+          { cmd: "python", args: [scriptFile, ...scriptArgs] },
+          { cmd: "py", args: ["-3", scriptFile, ...scriptArgs] },
+          { cmd: "python3", args: [scriptFile, ...scriptArgs] },
+        ]
+      : [
+          { cmd: "python3", args: [scriptFile, ...scriptArgs] },
+          { cmd: "python", args: [scriptFile, ...scriptArgs] },
+        ]),
+  ].filter(Boolean);
+  const seen = new Set();
+  return rawCandidates.filter((candidate) => {
+    const key = [candidate.cmd, ...candidate.args].join("\u0000");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function runPythonScript(scriptFile, scriptArgs = [], envOverrides = {}, label = path.basename(scriptFile)) {
+  if (!fs.existsSync(scriptFile)) {
     return {
       ok: false,
       skipped: true,
-      message: "local_db/import_data.py was not found.",
+      message: `${label} was not found.`,
     };
   }
 
-  const candidates =
-    process.platform === "win32"
-      ? [
-          { cmd: "python", args: [IMPORT_SCRIPT] },
-          { cmd: "py", args: ["-3", IMPORT_SCRIPT] },
-        ]
-      : [{ cmd: "python3", args: [IMPORT_SCRIPT] }, { cmd: "python", args: [IMPORT_SCRIPT] }];
-
-  for (const candidate of candidates) {
+  for (const candidate of pythonCandidates(scriptFile, scriptArgs)) {
     const result = spawnSync(candidate.cmd, candidate.args, {
       cwd: DB_DIR,
       encoding: "utf8",
       timeout: 120000,
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      env: {
+        ...process.env,
+        ...envOverrides,
+        PYTHONIOENCODING: "utf-8",
+      },
     });
 
     if (result.error && result.error.code === "ENOENT") {
@@ -255,8 +388,26 @@ function runImportData() {
   return {
     ok: false,
     skipped: true,
-    message: "No Python executable was found to run local_db/import_data.py.",
+    message: `No Python executable was found to run ${label}.`,
   };
+}
+
+function runImportData(csvFile = activeDatabaseFile()) {
+  return runPythonScript(
+    IMPORT_SCRIPT,
+    [],
+    { CONSOLIDATED_CASES_CSV: csvFile },
+    "local_db/import_data.py",
+  );
+}
+
+function runExportData(outputFile) {
+  return runPythonScript(
+    EXPORT_SCRIPT,
+    ["--output", outputFile],
+    { PULL_OUTPUT_CSV: outputFile },
+    "local_db/export_data.py",
+  );
 }
 
 function upsertCase(key, payload) {
@@ -299,10 +450,18 @@ function upsertCase(key, payload) {
     records[index] = record;
   }
 
-  writeDatabase(headers, records);
-  const sync = payload.skipSync ? { ok: true, skipped: true, message: "Sync skipped by request." } : runImportData();
+  const writeResult = writeDatabase(headers, records);
+  const sync = payload.skipSync
+    ? {
+        ok: true,
+        skipped: true,
+        message: writeResult.pending
+          ? "Saved to a pending local copy because Consolidated_Cases.csv is locked. Google Sheets will still use the latest data on Submit FIR."
+          : "Sync skipped by request.",
+      }
+    : runImportData(writeResult.file);
 
-  return { headers, record: records[index], records, created, sync };
+  return { headers, record: records[index], records, created, sync, writeResult };
 }
 
 function readBody(req) {
@@ -357,8 +516,13 @@ async function handleApi(req, res, next) {
       sendJson(res, 200, {
         ok: true,
         csv: CSV_FILE,
+        activeCsv: activeDatabaseFile(),
+        pendingCsv: PENDING_CSV_FILE,
+        pendingCsvExists: fs.existsSync(PENDING_CSV_FILE),
         importScript: IMPORT_SCRIPT,
         importScriptExists: fs.existsSync(IMPORT_SCRIPT),
+        exportScript: EXPORT_SCRIPT,
+        exportScriptExists: fs.existsSync(EXPORT_SCRIPT),
       });
       return;
     }
@@ -372,6 +536,53 @@ async function handleApi(req, res, next) {
     if (req.method === "POST" && url.pathname === "/api/cases/sync") {
       sendJson(res, 200, { ok: true, sync: runImportData() });
       return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/cases/pull") {
+      if (hasPendingLocalData()) {
+        sendJson(res, 409, {
+          ok: false,
+          error:
+            "Local pending data exists. Submit or sync local changes first, or close the CSV so the pending copy can be promoted before pulling from the Google Master Sheet.",
+          pendingCsv: PENDING_CSV_FILE,
+          activeCsv: activeDatabaseFile(),
+        });
+        return;
+      }
+
+      const pulledFile = path.join(DB_DIR, `Consolidated_Cases.pull.${process.pid}.${Date.now()}.csv`);
+      try {
+        const pull = runExportData(pulledFile);
+        if (!pull.ok) {
+          sendJson(res, 500, {
+            ok: false,
+            error: pull.stderr || pull.message || "Could not pull data from the Google Master Sheet.",
+            pull,
+          });
+          return;
+        }
+
+        const pulled = readCsvFile(pulledFile);
+        const writeResult = writeDatabase(pulled.headers, pulled.records);
+        const fresh = readDatabase();
+        sendJson(res, 200, {
+          ok: true,
+          pull,
+          writeResult,
+          headers: fresh.headers,
+          cases: fresh.records,
+          options: buildOptions(fresh.records),
+        });
+        return;
+      } finally {
+        if (fs.existsSync(pulledFile)) {
+          try {
+            fs.unlinkSync(pulledFile);
+          } catch {
+            // Temporary pull files are safe to remove on the next run if Windows is still holding them.
+          }
+        }
+      }
     }
 
     const caseMatch = url.pathname.match(/^\/api\/cases\/([^/]+)$/);

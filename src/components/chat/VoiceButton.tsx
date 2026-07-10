@@ -11,8 +11,10 @@ export const VoiceButton: React.FC<Props> = ({ language, onResult }) => {
   const { listening, start, stop, transcript } = useSpeechRecognition(langCode);
 
   useEffect(() => {
-    if (transcript) onResult(transcript);
-  }, [transcript, onResult]);
+    if (transcript) {
+      onResult(transcript);
+    }
+  }, [transcript]); 
 
   return (
     <button
