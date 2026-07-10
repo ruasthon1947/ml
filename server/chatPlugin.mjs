@@ -1,0 +1,63 @@
+import "dotenv/config";
+import { handleChatQuery } from "./geminiService.mjs";
+import { transcribeAudio } from "./speechService.mjs";
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch { reject(new Error("Invalid JSON body")); }
+    });
+    req.on("error", reject);
+  });
+}
+
+async function handleChatApi(req, res, next) {
+  const url = new URL(req.url || "/", "http://local-chat");
+
+  if (req.method === "POST" && url.pathname === "/api/chat") {
+    try {
+      const { question, role, stationId, language } = await readBody(req);
+      const answer = await handleChatQuery({ question, role, stationId, language });
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, answer }));
+    } catch (err) {
+      console.error(err);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/speech-to-text") {
+    try {
+      const { audioBase64 } = await readBody(req);
+      const result = await transcribeAudio(audioBase64);
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, ...result }));
+    } catch (err) {
+      console.error(err);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
+    return;
+  }
+
+  next();
+}
+
+function chatPlugin() {
+  return {
+    name: "chat-copilot-api",
+    configureServer(server) {
+      server.middlewares.use(handleChatApi);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(handleChatApi);
+    },
+  };
+}
+
+export default chatPlugin;
