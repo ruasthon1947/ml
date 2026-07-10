@@ -70,11 +70,12 @@ export async function fetchCases(): Promise<CasesResponse> {
 export async function saveCase(
   record: CaseRecord,
   caseId?: string,
+  options?: { skipSync?: boolean },
 ): Promise<CaseSaveResponse> {
   const response = await fetch(caseId ? api(`/cases/${encodeURIComponent(caseId)}`) : api("/cases"), {
     method: caseId ? "PATCH" : "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ case: record }),
+    body: JSON.stringify({ case: record, skipSync: Boolean(options?.skipSync) }),
   });
   return readJson<CaseSaveResponse>(response);
 }

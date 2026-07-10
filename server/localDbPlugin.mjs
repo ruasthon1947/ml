@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 
 const CSV_FILE = path.join(process.cwd(), "local_db", "Consolidated_Cases.csv");
 const DB_DIR = path.dirname(CSV_FILE);
+const PENDING_CSV_FILE = path.join(DB_DIR, "Consolidated_Cases.pending.csv");
 const IMPORT_SCRIPT = path.join(DB_DIR, "import_data.py");
 
 const OPTION_FIELDS = [
@@ -85,12 +86,87 @@ function stringifyCsv(headers, records) {
   return `${lines.join("\n")}\n`;
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function replaceFileWithRetry(source, target, options = {}) {
+  let lastError = null;
+  const retryableCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
+  const attempts = options.attempts ?? 10;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!retryableCodes.has(error?.code)) {
+        throw error;
+      }
+      sleepSync(Math.min(60 + attempt * 30, 300));
+    }
+  }
+
+  try {
+    fs.copyFileSync(source, target);
+    fs.unlinkSync(source);
+    return;
+  } catch (error) {
+    lastError = error;
+  }
+
+  try {
+    fs.writeFileSync(target, fs.readFileSync(source, "utf8"), "utf8");
+    fs.unlinkSync(source);
+    return;
+  } catch (error) {
+    lastError = error;
+  }
+
+  const details = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(
+    `Could not update Consolidated_Cases.csv because Windows is still locking it. ` +
+      `Close the CSV if it is open in Excel or another viewer, then try again. ` +
+      `A safe temp copy was kept at ${source}. Original error: ${details}`,
+  );
+}
+
+function fileMtime(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function promotePendingDatabase() {
+  if (!fs.existsSync(PENDING_CSV_FILE)) return false;
+  if (fileMtime(CSV_FILE) > fileMtime(PENDING_CSV_FILE)) return false;
+
+  try {
+    replaceFileWithRetry(PENDING_CSV_FILE, CSV_FILE, { attempts: 3 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function activeDatabaseFile() {
+  promotePendingDatabase();
+  if (fs.existsSync(PENDING_CSV_FILE) && fileMtime(PENDING_CSV_FILE) >= fileMtime(CSV_FILE)) {
+    return PENDING_CSV_FILE;
+  }
+  return CSV_FILE;
+}
+
 function readDatabase() {
-  if (!fs.existsSync(CSV_FILE)) {
+  const databaseFile = activeDatabaseFile();
+  if (!fs.existsSync(databaseFile)) {
     throw new Error(`Missing CSV file at ${CSV_FILE}`);
   }
 
-  const text = fs.readFileSync(CSV_FILE, "utf8");
+  const text = fs.readFileSync(databaseFile, "utf8");
   const table = parseCsv(text);
   const headers = table[0] || [];
   const records = table.slice(1).filter((row) => row.some(Boolean)).map((row) => {
@@ -108,7 +184,31 @@ function writeDatabase(headers, records) {
   fs.mkdirSync(DB_DIR, { recursive: true });
   const tmp = path.join(DB_DIR, `Consolidated_Cases.${process.pid}.${Date.now()}.tmp`);
   fs.writeFileSync(tmp, stringifyCsv(headers, records), "utf8");
-  fs.renameSync(tmp, CSV_FILE);
+  try {
+    replaceFileWithRetry(tmp, CSV_FILE, { attempts: 8 });
+    if (fs.existsSync(PENDING_CSV_FILE)) {
+      try {
+        fs.unlinkSync(PENDING_CSV_FILE);
+      } catch {
+        // The pending copy is only a cache. If Windows keeps it for a moment,
+        // the next write/read will replace or promote it.
+      }
+    }
+    return { pending: false, file: CSV_FILE };
+  } catch (error) {
+    try {
+      replaceFileWithRetry(tmp, PENDING_CSV_FILE, { attempts: 8 });
+      return { pending: true, file: PENDING_CSV_FILE, error };
+    } catch (pendingError) {
+      throw new Error(
+        `Could not update local_db. Main CSV error: ${
+          error instanceof Error ? error.message : String(error)
+        }. Pending CSV error: ${
+          pendingError instanceof Error ? pendingError.message : String(pendingError)
+        }`,
+      );
+    }
+  }
 }
 
 function normalizeValue(value) {
@@ -204,7 +304,7 @@ function buildOptions(records) {
   return options;
 }
 
-function runImportData() {
+function runImportData(csvFile = activeDatabaseFile()) {
   if (!fs.existsSync(IMPORT_SCRIPT)) {
     return {
       ok: false,
@@ -213,20 +313,43 @@ function runImportData() {
     };
   }
 
-  const candidates =
+  const envPython = process.env.LOCAL_DB_PYTHON || process.env.PYTHON;
+  const bundledPython =
     process.platform === "win32"
+      ? path.resolve(path.dirname(process.execPath), "..", "..", "python", "python.exe")
+      : path.resolve(path.dirname(process.execPath), "..", "..", "python", "bin", "python");
+  const rawCandidates = [
+    envPython && { cmd: envPython, args: [IMPORT_SCRIPT] },
+    fs.existsSync(bundledPython) && { cmd: bundledPython, args: [IMPORT_SCRIPT] },
+    ...(process.platform === "win32"
       ? [
           { cmd: "python", args: [IMPORT_SCRIPT] },
           { cmd: "py", args: ["-3", IMPORT_SCRIPT] },
+          { cmd: "python3", args: [IMPORT_SCRIPT] },
         ]
-      : [{ cmd: "python3", args: [IMPORT_SCRIPT] }, { cmd: "python", args: [IMPORT_SCRIPT] }];
+      : [
+          { cmd: "python3", args: [IMPORT_SCRIPT] },
+          { cmd: "python", args: [IMPORT_SCRIPT] },
+        ]),
+  ].filter(Boolean);
+  const seen = new Set();
+  const candidates = rawCandidates.filter((candidate) => {
+    const key = [candidate.cmd, ...candidate.args].join("\u0000");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   for (const candidate of candidates) {
     const result = spawnSync(candidate.cmd, candidate.args, {
       cwd: DB_DIR,
       encoding: "utf8",
       timeout: 120000,
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      env: {
+        ...process.env,
+        CONSOLIDATED_CASES_CSV: csvFile,
+        PYTHONIOENCODING: "utf-8",
+      },
     });
 
     if (result.error && result.error.code === "ENOENT") {
@@ -299,10 +422,18 @@ function upsertCase(key, payload) {
     records[index] = record;
   }
 
-  writeDatabase(headers, records);
-  const sync = payload.skipSync ? { ok: true, skipped: true, message: "Sync skipped by request." } : runImportData();
+  const writeResult = writeDatabase(headers, records);
+  const sync = payload.skipSync
+    ? {
+        ok: true,
+        skipped: true,
+        message: writeResult.pending
+          ? "Saved to a pending local copy because Consolidated_Cases.csv is locked. Google Sheets will still use the latest data on Submit FIR."
+          : "Sync skipped by request.",
+      }
+    : runImportData(writeResult.file);
 
-  return { headers, record: records[index], records, created, sync };
+  return { headers, record: records[index], records, created, sync, writeResult };
 }
 
 function readBody(req) {
@@ -357,6 +488,9 @@ async function handleApi(req, res, next) {
       sendJson(res, 200, {
         ok: true,
         csv: CSV_FILE,
+        activeCsv: activeDatabaseFile(),
+        pendingCsv: PENDING_CSV_FILE,
+        pendingCsvExists: fs.existsSync(PENDING_CSV_FILE),
         importScript: IMPORT_SCRIPT,
         importScriptExists: fs.existsSync(IMPORT_SCRIPT),
       });

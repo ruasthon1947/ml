@@ -50,7 +50,7 @@ const STEPS = [
   {
     id: 7,
     title: "Review & Submit",
-    subtitle: "Final save to local_db and Google Sheets sync trigger",
+    subtitle: "Submit once to update local_db and Google Sheets master",
   },
 ] as const;
 
@@ -268,7 +268,11 @@ const randomDateTime = (date = randomRecentDate()) =>
   ).padStart(2, "0")}:00`;
 
 const syncMessage = (sync: { ok: boolean; skipped?: boolean; message?: string; stderr?: string }) => {
-  if (sync.ok) return sync.skipped ? "Local save complete. Sync was skipped." : "Local save complete. Google sync script ran.";
+  if (sync.ok) {
+    return sync.skipped
+      ? "Local draft saved. Google Sheets will update once you click Submit FIR."
+      : "FIR submitted. Google Sheets master was updated.";
+  }
   return `Local save complete, but Google sync needs attention: ${sync.stderr || sync.message || "script failed"}`;
 };
 
@@ -292,6 +296,7 @@ const NewFIR: React.FC = () => {
     status: "idle",
     message: "",
   });
+  const [successRoute, setSuccessRoute] = useState("");
 
   useEffect(() => {
     if (!editing || !existingCase) return;
@@ -316,7 +321,7 @@ const NewFIR: React.FC = () => {
     );
   };
 
-  const saveCurrentStep = async () => {
+  const saveCurrentStep = async (syncNow = false) => {
     if (!form.CrimeRegisteredDate || !form.PoliceStation || !form.CrimeHead) {
       setSaveState({
         status: "error",
@@ -325,9 +330,16 @@ const NewFIR: React.FC = () => {
       return null;
     }
 
-    setSaveState({ status: "saving", message: "Saving to local_db..." });
+    setSaveState({
+      status: "saving",
+      message: syncNow ? "Submitting FIR and updating Google Sheets..." : "Saving local draft...",
+    });
     try {
-      const result = await saveCase(buildPayload(form), persistedCaseId || form.CaseMasterID || undefined);
+      const result = await saveCase(
+        buildPayload(form),
+        persistedCaseId || form.CaseMasterID || undefined,
+        { skipSync: !syncNow },
+      );
       const nextForm = toForm(result.case);
       const nextKey = caseKey(result.case);
       setForm(nextForm);
@@ -346,16 +358,18 @@ const NewFIR: React.FC = () => {
   };
 
   const goNext = async () => {
-    const result = await saveCurrentStep();
+    const result = await saveCurrentStep(false);
     if (!result) return;
     setHighestUnlocked((current) => Math.max(current, Math.min(STEPS.length, step + 1)));
     setStep((current) => Math.min(STEPS.length, current + 1));
   };
 
   const submit = async () => {
-    const result = await saveCurrentStep();
+    const result = await saveCurrentStep(true);
     if (result) {
-      navigate(`/fir/${caseRoute(result.case)}`);
+      if (result.sync.ok) {
+        setSuccessRoute(`/fir/${caseRoute(result.case)}`);
+      }
     }
   };
 
@@ -515,7 +529,7 @@ const NewFIR: React.FC = () => {
                 {tr("AI FIR Draft Assistant", "AI FIR Draft Assistant")}
               </h1>
               <p className="text-xs text-muted mt-1">
-                Enter a complaint draft, then save case details in CSV order. Each step writes back to local_db and runs the sync script.
+                Enter a complaint draft, then save case details in CSV order. Steps save locally; Submit FIR updates Google Sheets once.
               </p>
             </div>
             <span className="text-[10px] border border-line rounded-full px-2.5 py-1 text-muted">
@@ -659,11 +673,11 @@ const NewFIR: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={saveCurrentStep}
+                  onClick={() => saveCurrentStep(false)}
                   disabled={saveState.status === "saving"}
                   className="h-10 px-4 rounded-lg border border-line text-sm text-muted hover:text-white disabled:opacity-40"
                 >
-                  {saveState.status === "saving" ? "Saving..." : "Save step"}
+                  {saveState.status === "saving" ? "Saving..." : "Save locally"}
                 </button>
 
                 {step < STEPS.length ? (
@@ -672,7 +686,7 @@ const NewFIR: React.FC = () => {
                     disabled={saveState.status === "saving"}
                     className="bg-brand text-white text-sm font-medium px-5 py-2 rounded-lg hover:bg-brand/90 shadow-glow disabled:opacity-40"
                   >
-                    Save & continue -&gt;
+                    Save locally & continue -&gt;
                   </button>
                 ) : (
                   <button
@@ -688,6 +702,29 @@ const NewFIR: React.FC = () => {
           </div>
         </section>
       </div>
+
+      {successRoute && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-sage/40 bg-shell p-6 shadow-2xl">
+            <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-sage/15 text-sage border border-sage/30">
+              OK
+            </div>
+            <h2 className="text-center text-xl font-semibold text-white">FIR successfully submitted</h2>
+            <p className="mt-2 text-center text-sm text-muted">
+              Local data is saved and the Google Sheets master has been updated.
+            </p>
+            <div className="mt-6 flex justify-center">
+              <button
+                type="button"
+                onClick={() => navigate(successRoute)}
+                className="h-10 rounded-lg bg-sage px-5 text-sm font-medium text-white hover:bg-sage/90"
+              >
+                View FIR
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1030,7 +1067,7 @@ const Step7: React.FC<{ form: FormState; persisted: boolean }> = ({ form, persis
   return (
     <>
       <p className="text-sm text-muted mb-4">
-        Review the row before the final save. The final submit updates Consolidated_Cases.csv and runs import_data.py.
+        Review the row before submission. Earlier steps save locally; Submit FIR runs the Google Sheets sync once.
       </p>
 
       {!persisted && (
