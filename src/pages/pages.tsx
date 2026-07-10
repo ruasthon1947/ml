@@ -24,9 +24,11 @@ import {
   csvEscape,
   findCase,
   optionList,
+  pullCasesFromMaster,
   searchText,
   splitNames,
   toFirRecord,
+  useCases,
   useFirRecords,
 } from "../lib/cases";
 
@@ -1010,6 +1012,7 @@ export const FIRDetail: React.FC = () => {
           </div>
         </Card>
       </div>
+
     </div>
   );
 };
@@ -1277,6 +1280,15 @@ export const AdvancedSearch: React.FC = () => {
 export const Reports: React.FC = () => {
   const t = useT();
   const { records, loading, error } = useFirRecords();
+  const closedStatuses = ["Charge Sheeted", "Disposed by Court", "Closed - False Case"];
+  const today = new Date();
+
+  const daysBetween = (from: string, to?: string) => {
+    const start = new Date(from);
+    const end = to ? new Date(to) : today;
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
+    return Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
+  };
 
   const monthly = useMemo(() => {
     const buckets = new Map<string, { m: string; fir: number; closed: number }>();
@@ -1287,7 +1299,7 @@ export const Reports: React.FC = () => {
       const label = date.toLocaleDateString("en-IN", { month: "short" });
       const bucket = buckets.get(key) || { m: label, fir: 0, closed: 0 };
       bucket.fir += 1;
-      if (["Charge Sheeted", "Disposed by Court", "Closed - False Case"].includes(record.status)) {
+      if (closedStatuses.includes(record.status)) {
         bucket.closed += 1;
       }
       buckets.set(key, bucket);
@@ -1322,12 +1334,73 @@ export const Reports: React.FC = () => {
       .map(([name, value]) => ({ name, value }));
   }, [records]);
 
+  const totalCases = records.length;
+  const closedCases = records.filter((record) => closedStatuses.includes(record.status));
+  const disposalRate = totalCases ? Math.round((closedCases.length / totalCases) * 1000) / 10 : 0;
+  const investigationDurations = records
+    .map((record) => daysBetween(record.date, record.raw.LatestChargesheetDate || undefined))
+    .filter((value): value is number => value !== null);
+  const avgInvestigationDays = investigationDurations.length
+    ? Math.round(
+        (investigationDurations.reduce((sum, value) => sum + value, 0) / investigationDurations.length) * 10
+      ) / 10
+    : 0;
+  const casesThisMonth = records.filter((record) => {
+    const date = new Date(record.date);
+    return (
+      Number.isFinite(date.getTime()) &&
+      date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth()
+    );
+  }).length;
+  const overdueCases = records.filter((record) => {
+    const age = daysBetween(record.date);
+    return age !== null && age > 30 && !closedStatuses.includes(record.status);
+  }).length;
+  const disposedWithin30 = closedCases.length
+    ? Math.round(
+        (closedCases.filter((record) => {
+          const age = daysBetween(record.date, record.raw.LatestChargesheetDate || undefined);
+          return age !== null && age <= 30;
+        }).length /
+          closedCases.length) *
+          100
+      )
+    : 0;
+  const chargeSheetsFiled = records.filter((record) => record.raw.ChargesheetStatus === "Filed").length;
+  const chargeSheetFiledRate = totalCases ? Math.round((chargeSheetsFiled / totalCases) * 100) : 0;
+  const investigationCurrentRate = totalCases ? Math.round(((totalCases - overdueCases) / totalCases) * 100) : 0;
+  const statusRows = countByValue(records, "Status").map((item) => [
+    item.name,
+    item.count.toLocaleString("en-IN"),
+    totalCases ? `${Math.round((item.count / totalCases) * 1000) / 10}%` : "0%",
+  ]);
+  const stationRows = station.map((item) => [
+    item.n,
+    item.v.toLocaleString("en-IN"),
+    totalCases ? `${Math.round((item.v / totalCases) * 1000) / 10}%` : "0%",
+  ]);
+
   const csv = () => {
     const rows = [
-      "Case,FIR,Category,Station,Status",
+      "Case,FIR,Category,Station,Status,Gravity,Registered,Officer,Complainant,Accused,Sections",
       ...records.map(
         (r) =>
-          [r.label, r.fir, r.category, r.station, r.status].map(csvEscape).join(",")
+          [
+            r.label,
+            r.fir,
+            r.category,
+            r.station,
+            r.status,
+            r.gravity,
+            r.date,
+            r.io,
+            r.complainant,
+            r.accused,
+            r.section,
+          ]
+            .map(csvEscape)
+            .join(",")
       ),
     ];
 
@@ -1395,25 +1468,25 @@ export const Reports: React.FC = () => {
               "Disposal rate",
               "ವಿಲೇವಾರಿ ದರ"
             ),
-            "72.4%",
+            loading ? "..." : `${disposalRate}%`,
           ],
           [
             t(
               "Avg. investigation",
               "ಸರಾಸರಿ ತನಿಖೆ"
             ),
-            "18.6 days",
+            loading ? "..." : `${avgInvestigationDays} days`,
           ],
           [
             t(
               "Cases this month",
               "ಈ ತಿಂಗಳ ಪ್ರಕರಣಗಳು"
             ),
-            "96",
+            loading ? "..." : casesThisMonth.toLocaleString("en-IN"),
           ],
           [
             t("Overdue", "ಬಾಕಿ"),
-            "12",
+            loading ? "..." : overdueCases.toLocaleString("en-IN"),
           ],
         ].map((x) => (
           <Card
@@ -1566,21 +1639,21 @@ export const Reports: React.FC = () => {
                   "Cases disposed within 30 days",
                   "30 ದಿನಗಳಲ್ಲಿ ವಿಲೇವಾರಿ"
                 ),
-                78,
+                disposedWithin30,
               ],
               [
                 t(
                   "Charge sheets filed on time",
                   "ಸಮಯಕ್ಕೆ ಚಾರ್ಜ್‌ಶೀಟ್"
                 ),
-                84,
+                chargeSheetFiledRate,
               ],
               [
                 t(
                   "Investigation updates current",
                   "ತನಿಖಾ ನವೀಕರಣ ಪ್ರಸ್ತುತ"
                 ),
-                91,
+                investigationCurrentRate,
               ],
             ].map((x) => (
               <div key={String(x[0])}>
@@ -1601,6 +1674,19 @@ export const Reports: React.FC = () => {
             ))}
           </div>
         </Card>
+      </div>
+
+      <div className="grid xl:grid-cols-2 gap-4">
+        <ReferenceTable
+          columns={["Status", "Cases", "Share"]}
+          rows={statusRows}
+          emptyText="No status data available."
+        />
+        <ReferenceTable
+          columns={["Top Station", "Cases", "Share"]}
+          rows={stationRows}
+          emptyText="No station workload data available."
+        />
       </div>
     </div>
   );
@@ -1831,6 +1917,36 @@ export const Settings: React.FC = () => {
   const [savedMessage, setSavedMessage] =
     useState("");
 
+  const { reload: reloadCases } = useCases();
+  const [pullState, setPullState] = useState<{
+    status: "idle" | "pulling" | "success" | "error";
+    message: string;
+  }>({ status: "idle", message: "" });
+
+  const pullFromMaster = async () => {
+    setPullState({
+      status: "pulling",
+      message: "Pulling latest cases from Google Master Sheet...",
+    });
+
+    try {
+      const data = await pullCasesFromMaster();
+      await reloadCases(true);
+      const count = data.cases?.length || 0;
+      setPullState({
+        status: "success",
+        message: data.writeResult?.pending
+          ? `Pulled ${count} cases into a pending local copy. Close Consolidated_Cases.csv and refresh once so it can be promoted.`
+          : `Pulled ${count} cases into local_db successfully.`,
+      });
+    } catch (err) {
+      setPullState({
+        status: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const save = () => {
     localStorage.setItem(
       "kpfir.defaultStation",
@@ -2046,6 +2162,45 @@ export const Settings: React.FC = () => {
               }
             />
           </div>
+        </Card>
+
+        <Card className="p-5 settings-card xl:col-span-2">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="font-semibold">
+                Master Sheet Sync
+              </h2>
+
+              <p className="text-xs text-muted mt-1">
+                Google Master Sheet -&gt; local_db
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={pullFromMaster}
+              disabled={pullState.status === "pulling"}
+              className="h-10 px-4 rounded-lg bg-brand text-white text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {pullState.status === "pulling"
+                ? "Syncing..."
+                : "Sync from Master Sheet"}
+            </button>
+          </div>
+
+          {pullState.message && (
+            <div
+              className={`mt-4 rounded-lg border px-3 py-2 text-xs ${
+                pullState.status === "error"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : pullState.status === "success"
+                    ? "border-green-200 bg-green-50 text-green-700"
+                    : "border-line bg-panel text-muted"
+              }`}
+            >
+              {pullState.message}
+            </div>
+          )}
         </Card>
 
         <Card className="p-5 settings-card xl:col-span-2">

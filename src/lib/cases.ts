@@ -35,6 +35,15 @@ export type CaseSaveResponse = {
   error?: string;
 };
 
+export type CasePullResponse = CasesResponse & {
+  pull: SyncResult;
+  writeResult?: {
+    pending?: boolean;
+    file?: string;
+    error?: unknown;
+  };
+};
+
 export type FirRecord = {
   id: string;
   label: string;
@@ -83,6 +92,11 @@ export async function saveCase(
 export async function runCaseSync(): Promise<{ ok: boolean; sync: SyncResult }> {
   const response = await fetch(api("/cases/sync"), { method: "POST" });
   return readJson<{ ok: boolean; sync: SyncResult }>(response);
+}
+
+export async function pullCasesFromMaster(): Promise<CasePullResponse> {
+  const response = await fetch(api("/cases/pull"), { method: "POST" });
+  return readJson<CasePullResponse>(response);
 }
 
 export function useCases() {
