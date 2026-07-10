@@ -4,6 +4,6 @@ import localDbPlugin from "./server/localDbPlugin.mjs";
 import chatPlugin from "./server/chatPlugin.mjs";
 
 export default defineConfig({
-  plugins: [react(), localDbPlugin(), chatPlugin()],
+  plugins: [react(), chatPlugin(), localDbPlugin()],
   server: { host: true, port: 5173 },
 });

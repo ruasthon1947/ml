@@ -1,6 +1,5 @@
 import "dotenv/config";
 import { handleChatQuery } from "./geminiService.mjs";
-import { transcribeAudio } from "./speechService.mjs";
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -23,20 +22,6 @@ async function handleChatApi(req, res, next) {
       const answer = await handleChatQuery({ question, role, stationId, language });
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: true, answer }));
-    } catch (err) {
-      console.error(err);
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, error: err.message }));
-    }
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/speech-to-text") {
-    try {
-      const { audioBase64 } = await readBody(req);
-      const result = await transcribeAudio(audioBase64);
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ ok: true, ...result }));
     } catch (err) {
       console.error(err);
       res.statusCode = 500;
