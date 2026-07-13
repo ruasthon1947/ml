@@ -15,6 +15,7 @@ import {
   todayIso,
   useCases,
 } from "../lib/cases";
+import { useAuth } from "../context/AuthContext";
 
 const STEPS = [
   {
@@ -50,7 +51,7 @@ const STEPS = [
   {
     id: 7,
     title: "Review & Submit",
-    subtitle: "Submit once to update local_db and Google Sheets master",
+    subtitle: "Submit once to update Google Sheets master",
   },
 ] as const;
 
@@ -89,6 +90,7 @@ const CASE_HEADERS = [
   "Latitude",
   "Longitude",
   "BriefFacts",
+  "FiledBy",
 ];
 
 type FormState = Record<string, string>;
@@ -133,6 +135,7 @@ const emptyForm = (): FormState => ({
   Latitude: "",
   Longitude: "",
   BriefFacts: "",
+  FiledBy: "",
 });
 
 const toForm = (record?: CaseRecord): FormState => {
@@ -144,7 +147,7 @@ const toForm = (record?: CaseRecord): FormState => {
   return base;
 };
 
-const buildPayload = (form: FormState): CaseRecord => {
+const buildPayload = (form: FormState, user?: { employeeId: string } | null): CaseRecord => {
   const payload: CaseRecord = {};
   for (const header of CASE_HEADERS) {
     payload[header] = form[header] || "";
@@ -153,6 +156,11 @@ const buildPayload = (form: FormState): CaseRecord => {
   payload.VictimNames = joinNames(splitNames(payload.VictimNames));
   payload.AccusedCount = String(splitNames(payload.AccusedNames).length);
   payload.VictimCount = String(splitNames(payload.VictimNames).length);
+  
+  if (user?.employeeId && !payload.FiledBy) {
+    payload.FiledBy = user.employeeId;
+  }
+  
   return payload;
 };
 
@@ -282,6 +290,7 @@ const NewFIR: React.FC = () => {
   const { id } = useParams();
   const editing = Boolean(id);
   const { cases, options, loading, error, reload } = useCases();
+  const { user } = useAuth();
 
   const existingCase = useMemo(() => findCase(cases, id), [cases, id]);
   const [loadedKey, setLoadedKey] = useState("");
@@ -336,7 +345,7 @@ const NewFIR: React.FC = () => {
     });
     try {
       const result = await saveCase(
-        buildPayload(form),
+        buildPayload(form, user),
         persistedCaseId || form.CaseMasterID || undefined,
         { skipSync: !syncNow },
       );
@@ -439,7 +448,7 @@ const NewFIR: React.FC = () => {
             IncidentToDate: randomDateTime(registeredDate),
             Latitude: `12.${randomInt(850000, 999999)}`,
             Longitude: `77.${randomInt(450000, 750000)}`,
-            BriefFacts: `Demo complaint: ${randomName()} reported a ${current.CrimeSubHead || crimeSubHead} incident near ${current.PoliceStation || "the selected police station"}. The officer recorded preliminary facts for testing the local_db save flow.`,
+            BriefFacts: `Demo complaint: ${randomName()} reported a ${current.CrimeSubHead || crimeSubHead} incident near ${current.PoliceStation || "the selected police station"}. The officer recorded preliminary facts for testing the save flow.`,
           };
         }
         case 3:
@@ -499,7 +508,7 @@ const NewFIR: React.FC = () => {
   };
 
   if (loading && editing && !existingCase) {
-    return <div className="p-6 text-sm text-muted">Loading case from local_db...</div>;
+    return <div className="p-6 text-sm text-muted">Loading case from Google Sheets...</div>;
   }
 
   if (error && editing && !existingCase) {
@@ -507,7 +516,7 @@ const NewFIR: React.FC = () => {
   }
 
   if (editing && !loading && !existingCase) {
-    return <div className="p-6 text-sm text-muted">Case not found in Consolidated_Cases.csv.</div>;
+    return <div className="p-6 text-sm text-muted">Case not found in Google Sheets master.</div>;
   }
 
   return (
@@ -517,7 +526,7 @@ const NewFIR: React.FC = () => {
           {editing ? "Edit FIR" : "New FIR"}
         </h2>
         <div className="text-xs text-muted">
-          Source: <span className="text-white">local_db/Consolidated_Cases.csv</span>
+          Source: <span className="text-white">Google Sheets API</span>
         </div>
       </div>
 
@@ -529,7 +538,7 @@ const NewFIR: React.FC = () => {
                 {tr("AI FIR Draft Assistant", "AI FIR Draft Assistant")}
               </h1>
               <p className="text-xs text-muted mt-1">
-                Enter a complaint draft, then save case details in CSV order. Steps save locally; Submit FIR updates Google Sheets once.
+                Enter a complaint draft, then save case details. Steps save locally; Submit FIR updates Google Sheets once.
               </p>
             </div>
             <span className="text-[10px] border border-line rounded-full px-2.5 py-1 text-muted">
@@ -955,7 +964,7 @@ const Step4: React.FC<{
   victimCount: number;
 }> = ({ form, update, victimCount }) => (
   <>
-    <Field label="VictimNames" hint="Enter one victim per line. The CSV stores them with semicolons.">
+    <Field label="VictimNames" hint="Enter one victim per line.">
       <textarea
         rows={6}
         value={textareaFromNames(form.VictimNames)}

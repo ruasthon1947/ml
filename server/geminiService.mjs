@@ -1,9 +1,28 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { FILTERABLE_FIELDS, queryCases } from "./caseStore.mjs";
 import { applyAccessControl } from "./rbac.mjs";
+import { casesFromGoogle } from "./googleSheets.mjs";
+
+const FILTERABLE_FIELDS = [
+  "PoliceStation",
+  "Status",
+  "CaseCategory",
+  "Gravity",
+  "District",
+  "CrimeHead",
+  "CrimeSubHead",
+];
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+function queryCases(rows, filter) {
+  return rows.filter((row) => {
+    for (const key of Object.keys(filter)) {
+      if (filter[key] && row[key] !== filter[key]) return false;
+    }
+    return true;
+  });
+}
 
 async function generateFilterSpec(question) {
   const prompt = `
@@ -40,6 +59,7 @@ Answer concisely based only on this data. If empty, say no matching records were
 export async function handleChatQuery({ question, role, stationId, language }) {
   const filterSpec = await generateFilterSpec(question);
   const scopedFilter = applyAccessControl(filterSpec, role, stationId);
-  const rows = queryCases(scopedFilter);
-  return await generateAnswer(question, rows, language);
+  const { rows } = await casesFromGoogle();
+  const matchedRows = queryCases(rows, scopedFilter);
+  return await generateAnswer(question, matchedRows, language);
 }

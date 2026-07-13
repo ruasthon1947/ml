@@ -3,3 +3,4 @@ dist/
 .env
 .env.local
 local_db/service_account.json
+service-account.json

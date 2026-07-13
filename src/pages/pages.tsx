@@ -1,5 +1,15 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { auth } from "../firebase";
+import { RecaptchaVerifier, signInWithPhoneNumber, ConfirmationResult } from "firebase/auth";
+import { getMessaging, getToken } from "firebase/messaging";
+
+declare global {
+  interface Window {
+    recaptchaVerifier: any;
+  }
+}
+
 import {
   Bar,
   BarChart,
@@ -205,7 +215,7 @@ const ReferenceHeader: React.FC<{
     <p className="text-sm text-muted mt-1">{description}</p>
     <div className="mt-3 flex flex-wrap gap-2 text-xs">
       <span className="rounded-full border border-line bg-shell px-3 py-1 text-muted">
-        Source: local_db/Consolidated_Cases
+        Source: Google Sheets API
       </span>
       <span className="rounded-full border border-line bg-shell px-3 py-1 text-muted">
         {loading ? "Loading..." : `${count.toLocaleString("en-IN")} records loaded`}
@@ -348,25 +358,37 @@ export const Dashboard: React.FC = () => {
   const nav = useNavigate();
   const { user } = useAuth();
   const { records, loading, error } = useFirRecords();
-  const totalCases = records.length;
-  const underInvestigation = countWhere(records, (r) => r.status === "Under Investigation");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  const filteredRecords = useMemo(() => {
+    return records.filter((r) => {
+      const caseDate = r.date || r.raw.CrimeRegisteredDate;
+      if (fromDate && caseDate < fromDate) return false;
+      if (toDate && caseDate > toDate) return false;
+      return true;
+    });
+  }, [records, fromDate, toDate]);
+
+  const totalCases = filteredRecords.length;
+  const underInvestigation = countWhere(filteredRecords, (r) => r.status === "Under Investigation");
   const chargeSheetsDue = countWhere(
-    records,
+    filteredRecords,
     (r) => (r.raw.ChargesheetStatus || "Pending") !== "Filed" && r.status !== "Disposed by Court",
   );
-  const highGravity = countWhere(records, (r) => r.gravity === "Heinous");
+  const highGravity = countWhere(filteredRecords, (r) => r.gravity === "Heinous");
   const closedStatuses = ["Charge Sheeted", "Disposed by Court", "Closed - False Case"];
   const employeeTail = user?.employeeId?.split("-").pop() || "";
-  const assignedRecords = records.filter(
+  const assignedRecords = filteredRecords.filter(
     (r) =>
       (employeeTail && r.raw.EmployeeID === employeeTail) ||
       (user?.name && r.io === user.name),
   );
   const myActiveCases = assignedRecords.filter((r) => r.status === "Under Investigation").length;
-  const disposedCases = countWhere(records, (r) => closedStatuses.includes(r.status));
+  const disposedCases = countWhere(filteredRecords, (r) => closedStatuses.includes(r.status));
   const disposalRate = totalCases ? Math.round((disposedCases / totalCases) * 1000) / 10 : 0;
   const avgInvestigationDays = (() => {
-    const durations = records
+    const durations = filteredRecords
       .map((record) => {
         const start = new Date(record.date);
         const end = new Date(record.raw.LatestChargesheetDate || new Date().toISOString().slice(0, 10));
@@ -409,22 +431,52 @@ export const Dashboard: React.FC = () => {
     ],
   ];
 
-  const activity = useMemo(
-    () =>
-      Array.from({ length: 7 }, (_, index) => {
-        const date = new Date();
-        date.setHours(0, 0, 0, 0);
-        date.setDate(date.getDate() - (6 - index));
-        const iso = date.toISOString().slice(0, 10);
-        const dayRecords = records.filter((record) => record.date === iso);
-        return {
-          day: date.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }),
+  const activity = useMemo(() => {
+    let start = new Date();
+    start.setDate(start.getDate() - 6);
+    let end = new Date();
+    
+    if (fromDate) start = new Date(fromDate);
+    if (toDate) end = new Date(toDate);
+    
+    const diffDays = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    const groupByMonth = diffDays > 60;
+    
+    if (groupByMonth) {
+      const buckets = new Map<string, { day: string; fir: number; solved: number }>();
+      let d = new Date(start);
+      d.setDate(1);
+      while (d <= end) {
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        const label = d.toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+        buckets.set(key, { day: label, fir: 0, solved: 0 });
+        d.setMonth(d.getMonth() + 1);
+      }
+      for (const record of filteredRecords) {
+        const date = new Date(record.date);
+        if (!Number.isFinite(date.getTime())) continue;
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        if (buckets.has(key)) {
+          const b = buckets.get(key)!;
+          b.fir++;
+          if (closedStatuses.includes(record.status)) b.solved++;
+        }
+      }
+      return Array.from(buckets.values());
+    } else {
+      const days = [];
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const iso = d.toISOString().slice(0, 10);
+        const dayRecords = filteredRecords.filter((record) => record.date === iso);
+        days.push({
+          day: d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }),
           fir: dayRecords.length,
           solved: dayRecords.filter((record) => closedStatuses.includes(record.status)).length,
-        };
-      }),
-    [records],
-  );
+        });
+      }
+      return days;
+    }
+  }, [filteredRecords, fromDate, toDate]);
 
   const attention = [
     [
@@ -452,7 +504,7 @@ export const Dashboard: React.FC = () => {
       t("Due in 2 days", "2 ದಿನಗಳಲ್ಲಿ ಗಡುವು"),
     ],
   ];
-  const liveAttention = records
+  const liveAttention = filteredRecords
     .filter((record) => record.status === "Under Investigation" || record.gravity === "Heinous")
     .slice(0, 3)
     .map((record) => [
@@ -475,6 +527,12 @@ export const Dashboard: React.FC = () => {
 
   return (
     <div className="p-5 md:p-6 space-y-5 max-w-[1500px] mx-auto w-full">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
+        <div>
+          <h1 className="text-xl font-semibold">{t("Dashboard", "ಡ್ಯಾಶ್‌ಬೋರ್ಡ್")}</h1>
+          <p className="text-sm text-muted mt-1">{t("Overview of FIRs and activity.", "ಎಫ್‌ಐಆರ್‌ಗಳ ಅವಲೋಕನ ಮತ್ತು ಚಟುವಟಿಕೆ.")}</p>
+        </div>
+      </div>
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {metrics.map((m, i) => (
           <button
@@ -507,7 +565,7 @@ export const Dashboard: React.FC = () => {
 
       <div className="grid xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,.75fr)] gap-4">
         <Card className="p-5">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <div className="font-semibold">
                 {t(
@@ -518,20 +576,26 @@ export const Dashboard: React.FC = () => {
 
               <div className="text-xs text-muted mt-1">
                 {t(
-                  "Registered vs solved · last 7 days",
-                  "ನೋಂದಾಯಿತ ಮತ್ತು ಪರಿಹರಿಸಿದ · ಕಳೆದ 7 ದಿನಗಳು"
+                  "Registered vs solved",
+                  "ನೋಂದಾಯಿತ ಮತ್ತು ಪರಿಹರಿಸಿದ"
                 )}
               </div>
             </div>
 
-            <div className="flex gap-4 text-[11px] text-muted">
-              <span>
-                ● {t("Registered", "ನೋಂದಾಯಿತ")}
-              </span>
+            <div className="flex flex-wrap gap-4 items-center">
+              <div className="flex gap-3">
+                <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="h-8 px-2 bg-panel border border-line rounded text-xs outline-none focus:border-brand" />
+                <input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="h-8 px-2 bg-panel border border-line rounded text-xs outline-none focus:border-brand" />
+              </div>
+              <div className="flex gap-4 text-[11px] text-muted">
+                <span>
+                  ● {t("Registered", "ನೋಂದಾಯಿತ")}
+                </span>
 
-              <span>
-                ◌ {t("Solved", "ಪರಿಹರಿಸಲಾಗಿದೆ")}
-              </span>
+                <span>
+                  ◌ {t("Solved", "ಪರಿಹರಿಸಲಾಗಿದೆ")}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -543,9 +607,10 @@ export const Dashboard: React.FC = () => {
                 <XAxis
                   dataKey="day"
                   fontSize={11}
+                  label={{ value: "Date", position: "insideBottomRight", offset: -5, fontSize: 10, fill: "var(--muted)" }}
                 />
 
-                <YAxis fontSize={11} />
+                <YAxis fontSize={11} label={{ value: "Number of FIRs", angle: -90, position: "insideLeft", fontSize: 10, fill: "var(--muted)" }} />
 
                 <Tooltip
                   contentStyle={{
@@ -829,7 +894,7 @@ export const FIRDetail: React.FC = () => {
   const r = matchedCase ? toFirRecord(matchedCase) : undefined;
 
   if (loading) {
-    return <div className="p-5 text-sm text-muted">Loading case from local_db...</div>;
+    return <div className="p-5 text-sm text-muted">Loading case from Google Sheets...</div>;
   }
 
   if (error) {
@@ -837,7 +902,7 @@ export const FIRDetail: React.FC = () => {
   }
 
   if (!r) {
-    return <div className="p-5 text-sm text-muted">Case not found in Consolidated_Cases.csv.</div>;
+    return <div className="p-5 text-sm text-muted">Case not found in Google Sheets.</div>;
   }
 
   const timeline = [
@@ -1280,8 +1345,19 @@ export const AdvancedSearch: React.FC = () => {
 export const Reports: React.FC = () => {
   const t = useT();
   const { records, loading, error } = useFirRecords();
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const closedStatuses = ["Charge Sheeted", "Disposed by Court", "Closed - False Case"];
   const today = new Date();
+
+  const filteredRecords = useMemo(() => {
+    return records.filter((r) => {
+      const caseDate = r.date || r.raw.CrimeRegisteredDate;
+      if (fromDate && caseDate < fromDate) return false;
+      if (toDate && caseDate > toDate) return false;
+      return true;
+    });
+  }, [records, fromDate, toDate]);
 
   const daysBetween = (from: string, to?: string) => {
     const start = new Date(from);
@@ -1291,28 +1367,45 @@ export const Reports: React.FC = () => {
   };
 
   const monthly = useMemo(() => {
+    let start = new Date();
+    start.setDate(start.getDate() - 180); // Default 6 months
+    let end = new Date();
+    
+    if (fromDate) start = new Date(fromDate);
+    if (toDate) end = new Date(toDate);
+
     const buckets = new Map<string, { m: string; fir: number; closed: number }>();
-    for (const record of records) {
+    
+    // Initialize buckets for all months in range
+    let d = new Date(start);
+    d.setDate(1); // Set to start of month
+    while (d <= end) {
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+      buckets.set(key, { m: label, fir: 0, closed: 0 });
+      d.setMonth(d.getMonth() + 1);
+    }
+
+    for (const record of filteredRecords) {
       const date = new Date(record.date);
       if (!Number.isFinite(date.getTime())) continue;
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-      const label = date.toLocaleDateString("en-IN", { month: "short" });
-      const bucket = buckets.get(key) || { m: label, fir: 0, closed: 0 };
+      if (!buckets.has(key)) continue; // Outside filter range
+      
+      const bucket = buckets.get(key)!;
       bucket.fir += 1;
       if (closedStatuses.includes(record.status)) {
         bucket.closed += 1;
       }
-      buckets.set(key, bucket);
     }
     return Array.from(buckets.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-6)
       .map(([, value]) => value);
-  }, [records]);
+  }, [filteredRecords, fromDate, toDate]);
 
   const station = useMemo(() => {
     const buckets = new Map<string, number>();
-    for (const record of records) {
+    for (const record of filteredRecords) {
       const key = record.station || "Unassigned";
       buckets.set(key, (buckets.get(key) || 0) + 1);
     }
@@ -1320,11 +1413,11 @@ export const Reports: React.FC = () => {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
       .map(([name, value]) => ({ n: name.replace(" Police Station", ""), v: value }));
-  }, [records]);
+  }, [filteredRecords]);
 
   const pie = useMemo(() => {
     const buckets = new Map<string, number>();
-    for (const record of records) {
+    for (const record of filteredRecords) {
       const key = record.raw.CrimeHead || record.category || "Other";
       buckets.set(key, (buckets.get(key) || 0) + 1);
     }
@@ -1332,12 +1425,12 @@ export const Reports: React.FC = () => {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
       .map(([name, value]) => ({ name, value }));
-  }, [records]);
+  }, [filteredRecords]);
 
-  const totalCases = records.length;
-  const closedCases = records.filter((record) => closedStatuses.includes(record.status));
+  const totalCases = filteredRecords.length;
+  const closedCases = filteredRecords.filter((record) => closedStatuses.includes(record.status));
   const disposalRate = totalCases ? Math.round((closedCases.length / totalCases) * 1000) / 10 : 0;
-  const investigationDurations = records
+  const investigationDurations = filteredRecords
     .map((record) => daysBetween(record.date, record.raw.LatestChargesheetDate || undefined))
     .filter((value): value is number => value !== null);
   const avgInvestigationDays = investigationDurations.length
@@ -1345,7 +1438,7 @@ export const Reports: React.FC = () => {
         (investigationDurations.reduce((sum, value) => sum + value, 0) / investigationDurations.length) * 10
       ) / 10
     : 0;
-  const casesThisMonth = records.filter((record) => {
+  const casesThisMonth = filteredRecords.filter((record) => {
     const date = new Date(record.date);
     return (
       Number.isFinite(date.getTime()) &&
@@ -1353,7 +1446,7 @@ export const Reports: React.FC = () => {
       date.getMonth() === today.getMonth()
     );
   }).length;
-  const overdueCases = records.filter((record) => {
+  const overdueCases = filteredRecords.filter((record) => {
     const age = daysBetween(record.date);
     return age !== null && age > 30 && !closedStatuses.includes(record.status);
   }).length;
@@ -1367,10 +1460,10 @@ export const Reports: React.FC = () => {
           100
       )
     : 0;
-  const chargeSheetsFiled = records.filter((record) => record.raw.ChargesheetStatus === "Filed").length;
+  const chargeSheetsFiled = filteredRecords.filter((record) => record.raw.ChargesheetStatus === "Filed").length;
   const chargeSheetFiledRate = totalCases ? Math.round((chargeSheetsFiled / totalCases) * 100) : 0;
   const investigationCurrentRate = totalCases ? Math.round(((totalCases - overdueCases) / totalCases) * 100) : 0;
-  const statusRows = countByValue(records, "Status").map((item) => [
+  const statusRows = countByValue(filteredRecords, "Status").map((item) => [
     item.name,
     item.count.toLocaleString("en-IN"),
     totalCases ? `${Math.round((item.count / totalCases) * 1000) / 10}%` : "0%",
@@ -1510,6 +1603,12 @@ export const Reports: React.FC = () => {
             "FIR and disposal trend",
             "ಎಫ್‌ಐಆರ್ ಮತ್ತು ವಿಲೇವಾರಿ ಪ್ರವೃತ್ತಿ"
           )}
+          action={
+            <div className="flex gap-2">
+              <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="h-8 px-2 bg-panel border border-line rounded text-xs outline-none focus:border-brand" />
+              <input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="h-8 px-2 bg-panel border border-line rounded text-xs outline-none focus:border-brand" />
+            </div>
+          }
         >
           <ResponsiveContainer
             width="100%"
@@ -1527,12 +1626,14 @@ export const Reports: React.FC = () => {
                 fontSize={11}
                 stroke="currentColor"
                 opacity={0.65}
+                label={{ value: "Month / Year", position: "insideBottomRight", offset: -5, fontSize: 10, fill: "var(--muted)" }}
               />
 
               <YAxis
                 fontSize={11}
                 stroke="currentColor"
                 opacity={0.65}
+                label={{ value: "Number of FIRs", angle: -90, position: "insideLeft", fontSize: 10, fill: "var(--muted)" }}
               />
 
               <Tooltip content={<ChartTooltip />} />
@@ -1574,12 +1675,14 @@ export const Reports: React.FC = () => {
                 fontSize={10}
                 stroke="currentColor"
                 opacity={0.65}
+                label={{ value: "Station", position: "insideBottomRight", offset: -5, fontSize: 10, fill: "var(--muted)" }}
               />
 
               <YAxis
                 fontSize={11}
                 stroke="currentColor"
                 opacity={0.65}
+                label={{ value: "Workload (FIRs)", angle: -90, position: "insideLeft", fontSize: 10, fill: "var(--muted)" }}
               />
 
               <Tooltip content={<ChartTooltip />} />
@@ -1885,6 +1988,33 @@ export const Courts: React.FC = () => {
    SETTINGS
 ========================================================= */
 
+const Toggle = ({ on, set }: { on: boolean; set: (v: boolean) => void }) => (
+  <button
+    type="button"
+    aria-pressed={on}
+    onClick={() => set(!on)}
+    className={`relative h-5 w-10 shrink-0 rounded-full transition ${
+      on ? "bg-brand" : "bg-panel border border-line"
+    }`}
+  >
+    <span
+      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition ${
+        on ? "left-[22px]" : "left-0.5"
+      }`}
+    />
+  </button>
+);
+
+const SettingRow = ({ title, desc, control }: { title: string; desc: string; control: React.ReactNode }) => (
+  <div className="flex items-center justify-between gap-5 py-4 border-b border-line last:border-b-0">
+    <div className="min-w-0">
+      <div className="text-sm font-semibold">{title}</div>
+      <div className="text-[11px] text-muted mt-1 leading-5">{desc}</div>
+    </div>
+    {control}
+  </div>
+);
+
 export const Settings: React.FC = () => {
   const { user } = useAuth();
   const { language, setLanguage } = useLanguage();
@@ -1923,6 +2053,75 @@ export const Settings: React.FC = () => {
     message: string;
   }>({ status: "idle", message: "" });
 
+  const [phoneNumber, setPhoneNumber] = useState(
+    () => localStorage.getItem("kpfir.phoneNumber")?.replace("+91", "") || ""
+  );
+  const [otp, setOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [phoneLoading, setPhoneLoading] = useState(false);
+  const [phoneError, setPhoneError] = useState("");
+  const [phoneSuccess, setPhoneSuccess] = useState("");
+  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
+
+  useEffect(() => {
+    if (window.recaptchaVerifier) {
+      try {
+        window.recaptchaVerifier.clear();
+      } catch (e) {}
+      window.recaptchaVerifier = undefined;
+    }
+  }, []);
+
+  const sendOtp = async () => {
+    setPhoneError("");
+    setPhoneSuccess("");
+    setPhoneLoading(true);
+    
+    // Mock sending OTP
+    setTimeout(() => {
+      setOtpSent(true);
+      setPhoneSuccess(t("OTP sent successfully. (Use 1968)", "OTP ಯಶಸ್ವಿಯಾಗಿ ಕಳುಹಿಸಲಾಗಿದೆ. (Use 1968)"));
+      setPhoneLoading(false);
+    }, 500);
+  };
+
+  const verifyOtp = async () => {
+    setPhoneError("");
+    setPhoneSuccess("");
+    setPhoneLoading(true);
+    
+    setTimeout(() => {
+      if (otp === "1968") {
+        setOtpSent(false);
+        setPhoneSuccess(t("Phone number verified!", "ಫೋನ್ ಸಂಖ್ಯೆಯನ್ನು ದೃಢೀಕರಿಸಲಾಗಿದೆ!"));
+        localStorage.setItem("kpfir.phoneNumber", "+91" + phoneNumber);
+        
+        // Save to backend
+        fetch("/api/employee/password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ employeeId: user?.employeeId, phoneNumber: "+91" + phoneNumber })
+        }).catch(console.error);
+      } else {
+        setPhoneError("Invalid OTP. Try again. (Use 1968)");
+      }
+      setPhoneLoading(false);
+    }, 500);
+  };
+
+  const requestNotificationPermission = async () => {
+    try {
+      const messaging = getMessaging();
+      const token = await getToken(messaging, { vapidKey: "YOUR_VAPID_KEY_HERE" });
+      if (token) {
+        console.log("FCM Token:", token);
+        // We would save the token to backend here
+      }
+    } catch (err) {
+      console.warn("FCM permission denied or failed", err);
+    }
+  };
+
   const pullFromMaster = async () => {
     setPullState({
       status: "pulling",
@@ -1936,8 +2135,8 @@ export const Settings: React.FC = () => {
       setPullState({
         status: "success",
         message: data.writeResult?.pending
-          ? `Pulled ${count} cases into a pending local copy. Close Consolidated_Cases.csv and refresh once so it can be promoted.`
-          : `Pulled ${count} cases into local_db successfully.`,
+          ? `Pulled ${count} cases into a pending local copy. Refresh once so it can be promoted.`
+          : `Pulled ${count} cases successfully.`,
       });
     } catch (err) {
       setPullState({
@@ -1970,60 +2169,24 @@ export const Settings: React.FC = () => {
       )
     );
 
+    // Save preferences to backend
+    fetch("/api/employee/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ employeeId: user?.employeeId, notificationPref: newFir })
+    }).catch(console.error);
+
+    if (newFir) {
+      requestNotificationPermission();
+    }
+
     window.setTimeout(
       () => setSavedMessage(""),
       2200
     );
   };
 
-  const Toggle = ({
-    on,
-    set,
-  }: {
-    on: boolean;
-    set: (v: boolean) => void;
-  }) => (
-    <button
-      type="button"
-      aria-pressed={on}
-      onClick={() => set(!on)}
-      className={`relative h-5 w-10 shrink-0 rounded-full transition ${
-        on
-          ? "bg-brand"
-          : "bg-panel border border-line"
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition ${
-          on ? "left-[22px]" : "left-0.5"
-        }`}
-      />
-    </button>
-  );
 
-  const SettingRow = ({
-    title,
-    desc,
-    control,
-  }: {
-    title: string;
-    desc: string;
-    control: React.ReactNode;
-  }) => (
-    <div className="flex items-center justify-between gap-5 py-4 border-b border-line last:border-b-0">
-      <div className="min-w-0">
-        <div className="text-sm font-semibold">
-          {title}
-        </div>
-
-        <div className="text-[11px] text-muted mt-1 leading-5">
-          {desc}
-        </div>
-      </div>
-
-      {control}
-    </div>
-  );
 
   return (
     <div className="p-5 pb-20 space-y-5 max-w-6xl mx-auto w-full">
@@ -2041,76 +2204,7 @@ export const Settings: React.FC = () => {
       </div>
 
       <div className="grid xl:grid-cols-2 gap-4">
-        <Card className="p-5 settings-card">
-          <h2 className="font-semibold">
-            {t(
-              "Preferences",
-              "ಆದ್ಯತೆಗಳು"
-            )}
-          </h2>
 
-          <p className="text-xs text-muted mt-1">
-            {t(
-              "Set your default station and display language.",
-              "ನಿಮ್ಮ ಡೀಫಾಲ್ಟ್ ಠಾಣೆ ಮತ್ತು ಪ್ರದರ್ಶನ ಭಾಷೆಯನ್ನು ಹೊಂದಿಸಿ."
-            )}
-          </p>
-
-          <div className="mt-5 space-y-5">
-            <label className="block">
-              <span className="settings-label">
-                {t(
-                  "Default Police Station",
-                  "ಡೀಫಾಲ್ಟ್ ಪೊಲೀಸ್ ಠಾಣೆ"
-                )}
-              </span>
-
-              <div className="settings-select-wrap">
-                <select
-                  value={station}
-                  onChange={(e) =>
-                    setStation(e.target.value)
-                  }
-                  className="settings-select"
-                >
-                  <option>Whitefield PS</option>
-                  <option>Indiranagar PS</option>
-                  <option>Koramangala PS</option>
-                  <option>Cubbon Park PS</option>
-                </select>
-              </div>
-            </label>
-
-            <label className="block">
-              <span className="settings-label">
-                {t(
-                  "Application Language",
-                  "ಅಪ್ಲಿಕೇಶನ್ ಭಾಷೆ"
-                )}
-              </span>
-
-              <div className="settings-select-wrap">
-                <select
-                  value={language}
-                  onChange={(e) =>
-                    setLanguage(
-                      e.target.value as "en" | "kn"
-                    )
-                  }
-                  className="settings-select"
-                >
-                  <option value="en">
-                    English
-                  </option>
-
-                  <option value="kn">
-                    ಕನ್ನಡ
-                  </option>
-                </select>
-              </div>
-            </label>
-          </div>
-        </Card>
 
         <Card className="p-5 settings-card">
           <h2 className="font-semibold">
@@ -2128,6 +2222,67 @@ export const Settings: React.FC = () => {
           </p>
 
           <div className="mt-3">
+            <div id="recaptcha-container"></div>
+            
+            <SettingRow
+              title={t("Phone Number", "ಫೋನ್ ಸಂಖ್ಯೆ")}
+              desc={t("Used for SMS alerts and verification.", "SMS ಎಚ್ಚರಿಕೆಗಳು ಮತ್ತು ದೃಢೀಕರಣಕ್ಕಾಗಿ ಬಳಸಲಾಗುತ್ತದೆ.")}
+              control={
+                <div className="flex flex-col gap-2 min-w-[240px]">
+                  {Boolean(localStorage.getItem("kpfir.phoneNumber")) || phoneSuccess === t("Phone number verified!", "ಫೋನ್ ಸಂಖ್ಯೆಯನ್ನು ದೃಢೀಕರಿಸಲಾಗಿದೆ!") ? (
+                    <div className="flex items-center gap-2 text-sage text-sm font-medium">
+                      ✓ +91 {phoneNumber} {t("Verified", "ದೃಢೀಕರಿಸಲಾಗಿದೆ")}
+                      <button 
+                        onClick={() => {
+                          localStorage.removeItem("kpfir.phoneNumber");
+                          setPhoneNumber("");
+                          setPhoneSuccess("");
+                        }} 
+                        className="text-muted text-xs ml-4 hover:text-white underline"
+                      >
+                        {t("Change", "ಬದಲಾಯಿಸಿ")}
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex gap-2">
+                        <div className="flex items-center gap-2 flex-1 h-9 bg-panel border border-line rounded-lg px-3 focus-within:border-brand transition">
+                          <span className="text-xs text-muted font-medium">+91</span>
+                          <input 
+                            type="text" 
+                            value={phoneNumber} 
+                            onChange={e => setPhoneNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                            placeholder="9876543210"
+                            className="flex-1 bg-transparent text-xs outline-none"
+                          />
+                        </div>
+                        {!otpSent && (
+                          <button onClick={sendOtp} disabled={phoneLoading || phoneNumber.length !== 10} className="h-9 px-3 bg-brand rounded-lg text-xs font-medium disabled:opacity-60 whitespace-nowrap">
+                            {phoneLoading ? "..." : t("Send OTP", "OTP ಕಳುಹಿಸಿ")}
+                          </button>
+                        )}
+                      </div>
+                      {otpSent && (
+                        <div className="flex gap-2">
+                          <input 
+                            type="text" 
+                            value={otp} 
+                            onChange={e => setOtp(e.target.value)}
+                            placeholder="123456"
+                            className="flex-1 h-9 bg-panel border border-line rounded-lg px-3 text-xs outline-none"
+                          />
+                          <button onClick={verifyOtp} disabled={phoneLoading || !otp} className="h-9 px-3 bg-sage text-white rounded-lg text-xs font-medium disabled:opacity-60 whitespace-nowrap">
+                            {phoneLoading ? "..." : t("Verify", "ದೃಢೀಕರಿಸಿ")}
+                          </button>
+                        </div>
+                      )}
+                      {phoneError && <div className="text-rose text-[10px]">{phoneError}</div>}
+                      {phoneSuccess && <div className="text-sage text-[10px]">{phoneSuccess}</div>}
+                    </>
+                  )}
+                </div>
+              }
+            />
             <SettingRow
               title={t(
                 "New FIR Alerts",
@@ -2168,12 +2323,8 @@ export const Settings: React.FC = () => {
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <h2 className="font-semibold">
-                Master Sheet Sync
+                Sync Sheet
               </h2>
-
-              <p className="text-xs text-muted mt-1">
-                Google Master Sheet -&gt; local_db
-              </p>
             </div>
 
             <button
@@ -2184,7 +2335,7 @@ export const Settings: React.FC = () => {
             >
               {pullState.status === "pulling"
                 ? "Syncing..."
-                : "Sync from Master Sheet"}
+                : "Pull Latest"}
             </button>
           </div>
 

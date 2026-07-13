@@ -1,223 +1,11 @@
-import fs from "node:fs";
+import { casesFromGoogle, upsertCaseInGoogle, employeeById, updateEmployee, writeTable, readTable } from "./googleSheets.mjs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { parse } from "csv-parse/sync";
 
-const CSV_FILE = path.join(process.cwd(), "local_db", "Consolidated_Cases.csv");
-const DB_DIR = path.dirname(CSV_FILE);
-const PENDING_CSV_FILE = path.join(DB_DIR, "Consolidated_Cases.pending.csv");
-const IMPORT_SCRIPT = path.join(DB_DIR, "import_data.py");
-const EXPORT_SCRIPT = path.join(DB_DIR, "export_data.py");
-
-const OPTION_FIELDS = [
-  "CrimeHead",
-  "CrimeSubHead",
-  "PoliceStation",
-  "PoliceStationType",
-  "District",
-  "Court",
-  "Officer",
-  "OfficerRank",
-  "OfficerDesignation",
-  "Status",
-  "CaseCategory",
-  "Gravity",
-  "Acts",
-  "Sections",
-  "ChargesheetStatus",
-];
-
-function parseCsv(text) {
-  const rows = [];
-  let row = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    const next = text[i + 1];
-
-    if (inQuotes) {
-      if (ch === '"' && next === '"') {
-        cell += '"';
-        i += 1;
-      } else if (ch === '"') {
-        inQuotes = false;
-      } else {
-        cell += ch;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inQuotes = true;
-    } else if (ch === ",") {
-      row.push(cell);
-      cell = "";
-    } else if (ch === "\n") {
-      row.push(cell);
-      rows.push(row);
-      row = [];
-      cell = "";
-    } else if (ch !== "\r") {
-      cell += ch;
-    }
-  }
-
-  if (cell.length > 0 || row.length > 0) {
-    row.push(cell);
-    rows.push(row);
-  }
-
-  return rows;
-}
-
-function escapeCsvCell(value) {
-  const text = value == null ? "" : String(value);
-  if (/[",\r\n]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function stringifyCsv(headers, records) {
-  const lines = [headers.map(escapeCsvCell).join(",")];
-  for (const record of records) {
-    lines.push(headers.map((header) => escapeCsvCell(record[header] || "")).join(","));
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function replaceFileWithRetry(source, target, options = {}) {
-  let lastError = null;
-  const retryableCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
-  const attempts = options.attempts ?? 10;
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      fs.renameSync(source, target);
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!retryableCodes.has(error?.code)) {
-        throw error;
-      }
-      sleepSync(Math.min(60 + attempt * 30, 300));
-    }
-  }
-
-  try {
-    fs.copyFileSync(source, target);
-    fs.unlinkSync(source);
-    return;
-  } catch (error) {
-    lastError = error;
-  }
-
-  try {
-    fs.writeFileSync(target, fs.readFileSync(source, "utf8"), "utf8");
-    fs.unlinkSync(source);
-    return;
-  } catch (error) {
-    lastError = error;
-  }
-
-  const details = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(
-    `Could not update Consolidated_Cases.csv because Windows is still locking it. ` +
-      `Close the CSV if it is open in Excel or another viewer, then try again. ` +
-      `A safe temp copy was kept at ${source}. Original error: ${details}`,
-  );
-}
-
-function fileMtime(filePath) {
-  try {
-    return fs.statSync(filePath).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
-function promotePendingDatabase() {
-  if (!fs.existsSync(PENDING_CSV_FILE)) return false;
-  if (fileMtime(CSV_FILE) > fileMtime(PENDING_CSV_FILE)) return false;
-
-  try {
-    replaceFileWithRetry(PENDING_CSV_FILE, CSV_FILE, { attempts: 3 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function activeDatabaseFile() {
-  promotePendingDatabase();
-  if (fs.existsSync(PENDING_CSV_FILE) && fileMtime(PENDING_CSV_FILE) >= fileMtime(CSV_FILE)) {
-    return PENDING_CSV_FILE;
-  }
-  return CSV_FILE;
-}
-
-function hasPendingLocalData() {
-  return fs.existsSync(PENDING_CSV_FILE) && fileMtime(PENDING_CSV_FILE) >= fileMtime(CSV_FILE);
-}
-
-function readCsvFile(filePath) {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Missing CSV file at ${filePath}`);
-  }
-
-  const text = fs.readFileSync(filePath, "utf8");
-  const table = parseCsv(text);
-  const headers = table[0] || [];
-  const records = table.slice(1).filter((row) => row.some(Boolean)).map((row) => {
-    const record = {};
-    headers.forEach((header, index) => {
-      record[header] = row[index] || "";
-    });
-    return record;
-  });
-
-  return { headers, records };
-}
-
-function readDatabase() {
-  return readCsvFile(activeDatabaseFile());
-}
-
-function writeDatabase(headers, records) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
-  const tmp = path.join(DB_DIR, `Consolidated_Cases.${process.pid}.${Date.now()}.tmp`);
-  fs.writeFileSync(tmp, stringifyCsv(headers, records), "utf8");
-  try {
-    replaceFileWithRetry(tmp, CSV_FILE, { attempts: 8 });
-    if (fs.existsSync(PENDING_CSV_FILE)) {
-      try {
-        fs.unlinkSync(PENDING_CSV_FILE);
-      } catch {
-        // The pending copy is only a cache. If Windows keeps it for a moment,
-        // the next write/read will replace or promote it.
-      }
-    }
-    return { pending: false, file: CSV_FILE };
-  } catch (error) {
-    try {
-      replaceFileWithRetry(tmp, PENDING_CSV_FILE, { attempts: 8 });
-      return { pending: true, file: PENDING_CSV_FILE, error };
-    } catch (pendingError) {
-      throw new Error(
-        `Could not update local_db. Main CSV error: ${
-          error instanceof Error ? error.message : String(error)
-        }. Pending CSV error: ${
-          pendingError instanceof Error ? pendingError.message : String(pendingError)
-        }`,
-      );
-    }
-  }
-}
+const execFileAsync = promisify(execFile);
 
 function normalizeValue(value) {
   if (value == null) return "";
@@ -234,52 +22,11 @@ function splitList(value) {
     .filter(Boolean);
 }
 
-function nextNumericValue(records, field, fallback) {
-  const max = records.reduce((current, record) => {
-    const n = Number.parseInt(record[field], 10);
-    return Number.isFinite(n) ? Math.max(current, n) : current;
-  }, 0);
-  return String(max > 0 ? max + 1 : fallback);
-}
-
-function generateCrimeNo(records) {
-  const max = records.reduce((current, record) => {
-    const n = Number.parseInt(String(record.CrimeNo || "").replace(/\D/g, ""), 10);
-    return Number.isFinite(n) ? Math.max(current, n) : current;
-  }, 0);
-  if (max > 0) return String(max + 1);
-  return `${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, "0")}`;
-}
-
-function caseMatches(record, key) {
-  const wanted = decodeURIComponent(String(key || "")).trim();
-  if (!wanted) return false;
-  return [record.CaseMasterID, record.CaseNo, record.CrimeNo].some(
-    (value) => String(value || "").trim() === wanted,
-  );
-}
-
-function findCaseIndex(records, keyOrFields) {
-  if (typeof keyOrFields === "string") {
-    return records.findIndex((record) => caseMatches(record, keyOrFields));
-  }
-
-  const fields = keyOrFields || {};
-  const keys = [fields.CaseMasterID, fields.CaseNo, fields.CrimeNo].filter(Boolean);
-  return records.findIndex((record) => keys.some((key) => caseMatches(record, key)));
-}
-
-function recalcDerivedFields(record) {
-  record.AccusedCount = String(splitList(record.AccusedNames).length);
-  record.VictimCount = String(splitList(record.VictimNames).length);
-  if (!record.ArrestCount) record.ArrestCount = "0";
-  if (!record.ChargesheetCount) record.ChargesheetCount = "0";
-  if (!record.ChargesheetStatus) record.ChargesheetStatus = "Pending";
-  if (!record.Status) record.Status = "Under Investigation";
-  if (!record.CaseCategory) record.CaseCategory = "FIR";
-  if (!record.Gravity) record.Gravity = "Non-Heinous";
-  if (!record.District) record.District = "Bangalore Urban";
-}
+const OPTION_FIELDS = [
+  "CrimeHead", "CrimeSubHead", "PoliceStation", "PoliceStationType", "District",
+  "Court", "Officer", "OfficerRank", "OfficerDesignation", "Status",
+  "CaseCategory", "Gravity", "Acts", "Sections", "ChargesheetStatus"
+];
 
 function buildOptions(records) {
   const options = {};
@@ -312,156 +59,45 @@ function buildOptions(records) {
   return options;
 }
 
-function pythonCandidates(scriptFile, scriptArgs = []) {
-  const envPython = process.env.LOCAL_DB_PYTHON || process.env.PYTHON;
-  const bundledPython =
-    process.platform === "win32"
-      ? path.resolve(path.dirname(process.execPath), "..", "..", "python", "python.exe")
-      : path.resolve(path.dirname(process.execPath), "..", "..", "python", "bin", "python");
-  const rawCandidates = [
-    envPython && { cmd: envPython, args: [scriptFile, ...scriptArgs] },
-    fs.existsSync(bundledPython) && { cmd: bundledPython, args: [scriptFile, ...scriptArgs] },
-    ...(process.platform === "win32"
-      ? [
-          { cmd: "python", args: [scriptFile, ...scriptArgs] },
-          { cmd: "py", args: ["-3", scriptFile, ...scriptArgs] },
-          { cmd: "python3", args: [scriptFile, ...scriptArgs] },
-        ]
-      : [
-          { cmd: "python3", args: [scriptFile, ...scriptArgs] },
-          { cmd: "python", args: [scriptFile, ...scriptArgs] },
-        ]),
-  ].filter(Boolean);
-  const seen = new Set();
-  return rawCandidates.filter((candidate) => {
-    const key = [candidate.cmd, ...candidate.args].join("\u0000");
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+function generateCrimeNo(records) {
+  const currentYear = new Date().getFullYear();
+  let maxSeq = 0;
+  for (const record of records) {
+    const parts = String(record.CrimeNo || "").split("/");
+    if (parts.length === 2 && parts[1] === String(currentYear)) {
+      const seq = parseInt(parts[0], 10);
+      if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
+    }
+  }
+  return `${String(maxSeq + 1).padStart(4, "0")}/${currentYear}`;
 }
 
-function runPythonScript(scriptFile, scriptArgs = [], envOverrides = {}, label = path.basename(scriptFile)) {
-  if (!fs.existsSync(scriptFile)) {
-    return {
-      ok: false,
-      skipped: true,
-      message: `${label} was not found.`,
-    };
-  }
-
-  for (const candidate of pythonCandidates(scriptFile, scriptArgs)) {
-    const result = spawnSync(candidate.cmd, candidate.args, {
-      cwd: DB_DIR,
-      encoding: "utf8",
-      timeout: 120000,
-      env: {
-        ...process.env,
-        ...envOverrides,
-        PYTHONIOENCODING: "utf-8",
-      },
-    });
-
-    if (result.error && result.error.code === "ENOENT") {
-      continue;
-    }
-
-    if (result.error) {
-      return {
-        ok: false,
-        skipped: false,
-        command: [candidate.cmd, ...candidate.args].join(" "),
-        message: result.error.message,
-      };
-    }
-
-    return {
-      ok: result.status === 0,
-      skipped: false,
-      command: [candidate.cmd, ...candidate.args].join(" "),
-      exitCode: result.status,
-      stdout: (result.stdout || "").trim(),
-      stderr: (result.stderr || "").trim(),
-    };
-  }
-
-  return {
-    ok: false,
-    skipped: true,
-    message: `No Python executable was found to run ${label}.`,
-  };
+function nextNumericValue(records, field, fallback) {
+  const max = records.reduce((current, record) => {
+    const n = Number.parseInt(record[field], 10);
+    return Number.isFinite(n) ? Math.max(current, n) : current;
+  }, 0);
+  return String(max > 0 ? max + 1 : fallback);
 }
 
-function runImportData(csvFile = activeDatabaseFile()) {
-  return runPythonScript(
-    IMPORT_SCRIPT,
-    [],
-    { CONSOLIDATED_CASES_CSV: csvFile },
-    "local_db/import_data.py",
+function recalcDerivedFields(record) {
+  record.AccusedCount = String(splitList(record.AccusedNames).length);
+  record.VictimCount = String(splitList(record.VictimNames).length);
+  if (!record.ArrestCount) record.ArrestCount = "0";
+  if (!record.ChargesheetCount) record.ChargesheetCount = "0";
+  if (!record.ChargesheetStatus) record.ChargesheetStatus = "Pending";
+  if (!record.Status) record.Status = "Under Investigation";
+  if (!record.CaseCategory) record.CaseCategory = "FIR";
+  if (!record.Gravity) record.Gravity = "Non-Heinous";
+  if (!record.District) record.District = "Bangalore Urban";
+}
+
+function caseMatches(record, key) {
+  const wanted = decodeURIComponent(String(key || "")).trim();
+  if (!wanted) return false;
+  return [record.CaseMasterID, record.CaseNo, record.CrimeNo].some(
+    (value) => String(value || "").trim() === wanted,
   );
-}
-
-function runExportData(outputFile) {
-  return runPythonScript(
-    EXPORT_SCRIPT,
-    ["--output", outputFile],
-    { PULL_OUTPUT_CSV: outputFile },
-    "local_db/export_data.py",
-  );
-}
-
-function upsertCase(key, payload) {
-  const { headers, records } = readDatabase();
-  const fields = payload.case || payload.fields || payload;
-  const knownFields = {};
-
-  for (const header of headers) {
-    if (Object.prototype.hasOwnProperty.call(fields, header)) {
-      knownFields[header] = normalizeValue(fields[header]);
-    }
-  }
-
-  let index = findCaseIndex(records, key || knownFields);
-  const created = index === -1;
-  const record = {};
-  headers.forEach((header) => {
-    record[header] = created ? "" : records[index][header] || "";
-  });
-
-  Object.assign(record, knownFields);
-
-  if (!record.CaseMasterID) {
-    record.CaseMasterID = nextNumericValue(records, "CaseMasterID", 1);
-  }
-  if (!record.CaseNo) {
-    const year = new Date().getFullYear();
-    record.CaseNo = nextNumericValue(records, "CaseNo", Number(`${year}00001`));
-  }
-  if (!record.CrimeNo) {
-    record.CrimeNo = generateCrimeNo(records);
-  }
-
-  recalcDerivedFields(record);
-
-  if (created) {
-    records.push(record);
-    index = records.length - 1;
-  } else {
-    records[index] = record;
-  }
-
-  const writeResult = writeDatabase(headers, records);
-  const sync = payload.skipSync
-    ? {
-        ok: true,
-        skipped: true,
-        message: writeResult.pending
-          ? "Saved to a pending local copy because Consolidated_Cases.csv is locked. Google Sheets will still use the latest data on Submit FIR."
-          : "Sync skipped by request.",
-      }
-    : runImportData(writeResult.file);
-
-  return { headers, record: records[index], records, created, sync, writeResult };
 }
 
 function readBody(req) {
@@ -512,120 +148,178 @@ async function handleApi(req, res, next) {
   }
 
   try {
-    if (req.method === "GET" && url.pathname === "/api/health") {
-      sendJson(res, 200, {
-        ok: true,
-        csv: CSV_FILE,
-        activeCsv: activeDatabaseFile(),
-        pendingCsv: PENDING_CSV_FILE,
-        pendingCsvExists: fs.existsSync(PENDING_CSV_FILE),
-        importScript: IMPORT_SCRIPT,
-        importScriptExists: fs.existsSync(IMPORT_SCRIPT),
-        exportScript: EXPORT_SCRIPT,
-        exportScriptExists: fs.existsSync(EXPORT_SCRIPT),
-      });
+    if (req.method === "POST" && url.pathname === "/api/login") {
+      const { employeeId, password, firebaseAuth } = await readBody(req);
+      if (!employeeId || (!password && !firebaseAuth)) {
+        sendError(res, 400, "Employee ID and password are required.");
+        return;
+      }
+      const { row } = await employeeById(employeeId);
+      if (!row) {
+        sendError(res, 401, "Invalid credentials.");
+        return;
+      }
+      if (!firebaseAuth && row.FirstAuth !== password) {
+        sendError(res, 401, "Invalid credentials.");
+        return;
+      }
+      sendJson(res, 200, { ok: true, employeeId, name: row.Name || employeeId, isFirstLogin: row.HasLoggedIn !== "TRUE" });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/employee/password") {
+      const { employeeId, password, phoneNumber, notificationPref, hasLoggedIn } = await readBody(req);
+      if (!employeeId) {
+        sendError(res, 400, "Employee ID is required.");
+        return;
+      }
+      const updates = {};
+      if (password) {
+        updates.FirstAuth = password;
+        updates.HasLoggedIn = "TRUE";
+      }
+      if (hasLoggedIn) {
+        updates.HasLoggedIn = "TRUE";
+      }
+      if (phoneNumber) updates.PhoneNumber = phoneNumber;
+      if (notificationPref !== undefined) updates.NotificationPref = String(notificationPref);
+      
+      await updateEmployee(employeeId, updates);
+      sendJson(res, 200, { ok: true });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/cases") {
-      const { headers, records } = readDatabase();
-      sendJson(res, 200, { ok: true, headers, cases: records, options: buildOptions(records) });
+      const { headers, rows } = await casesFromGoogle();
+      sendJson(res, 200, { ok: true, headers, cases: rows, options: buildOptions(rows) });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/cases/sync") {
-      sendJson(res, 200, { ok: true, sync: runImportData() });
+      sendJson(res, 200, { ok: true, sync: { ok: true, skipped: true, message: "Sync handled dynamically via Node.js" } });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/cases/pull") {
-      if (hasPendingLocalData()) {
-        sendJson(res, 409, {
-          ok: false,
-          error:
-            "Local pending data exists. Submit or sync local changes first, or close the CSV so the pending copy can be promoted before pulling from the Google Master Sheet.",
-          pendingCsv: PENDING_CSV_FILE,
-          activeCsv: activeDatabaseFile(),
-        });
-        return;
-      }
-
-      const pulledFile = path.join(DB_DIR, `Consolidated_Cases.pull.${process.pid}.${Date.now()}.csv`);
       try {
-        const pull = runExportData(pulledFile);
-        if (!pull.ok) {
-          sendJson(res, 500, {
-            ok: false,
-            error: pull.stderr || pull.message || "Could not pull data from the Google Master Sheet.",
-            pull,
-          });
-          return;
+        const tempCsv = path.join(process.cwd(), "scratch", "temp_sync.csv");
+        const exportScript = path.join(process.cwd(), "local_db", "export_data.py");
+        const env = { ...process.env, GOOGLE_SERVICE_ACCOUNT_JSON: process.env.CATALYST_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_SERVICE_ACCOUNT_JSON };
+        
+        await execFileAsync("python", [exportScript, "--output", tempCsv], { env });
+        
+        if (fs.existsSync(tempCsv)) {
+          const csvData = fs.readFileSync(tempCsv, "utf8");
+          const records = parse(csvData, { columns: true, skip_empty_lines: true });
+          if (records.length > 0) {
+            const headers = Object.keys(records[0]);
+            const CONSOLIDATED_SHEET_ID = process.env.GOOGLE_CONSOLIDATED_SHEET_ID || "1uyzVgCAPZW9CkzkNHFKH0QOJm_nbn5Sr4ul9ngv0ZoM";
+            const tab = process.env.GOOGLE_CONSOLIDATED_TAB || "Consolidated_Cases";
+            
+            await writeTable(CONSOLIDATED_SHEET_ID, tab, headers, records);
+          }
+          fs.unlinkSync(tempCsv); // Cleanup
         }
-
-        const pulled = readCsvFile(pulledFile);
-        const writeResult = writeDatabase(pulled.headers, pulled.records);
-        const fresh = readDatabase();
+        
+        const { headers, rows } = await casesFromGoogle();
         sendJson(res, 200, {
           ok: true,
-          pull,
-          writeResult,
-          headers: fresh.headers,
-          cases: fresh.records,
-          options: buildOptions(fresh.records),
+          pull: { ok: true },
+          writeResult: { pending: false },
+          headers,
+          cases: rows,
+          options: buildOptions(rows),
         });
-        return;
-      } finally {
-        if (fs.existsSync(pulledFile)) {
-          try {
-            fs.unlinkSync(pulledFile);
-          } catch {
-            // Temporary pull files are safe to remove on the next run if Windows is still holding them.
-          }
-        }
+      } catch (err) {
+        sendError(res, 500, `Sync failed: ${err.message}`);
       }
+      return;
     }
 
     const caseMatch = url.pathname.match(/^\/api\/cases\/([^/]+)$/);
     if (req.method === "GET" && caseMatch) {
-      const { headers, records } = readDatabase();
-      const record = records.find((item) => caseMatches(item, caseMatch[1]));
+      const { headers, rows } = await casesFromGoogle();
+      const record = rows.find((item) => caseMatches(item, caseMatch[1]));
       if (!record) {
         sendError(res, 404, "Case was not found.");
         return;
       }
-      sendJson(res, 200, { ok: true, headers, case: record, options: buildOptions(records) });
+      sendJson(res, 200, { ok: true, headers, case: record, options: buildOptions(rows) });
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/cases") {
+    if ((req.method === "POST" && url.pathname === "/api/cases") || ((req.method === "PATCH" || req.method === "PUT") && caseMatch)) {
       const payload = await readBody(req);
-      const result = upsertCase("", payload);
+      const { headers, rows: records } = await casesFromGoogle();
+      const fields = payload.case || payload.fields || payload;
+      
+      const key = caseMatch ? caseMatch[1] : "";
+      
+      const knownFields = {};
+      for (const [key, value] of Object.entries(fields)) {
+        knownFields[key] = normalizeValue(value);
+      }
+
+      let index = records.findIndex((record) => caseMatches(record, key || knownFields.CrimeNo || knownFields.CaseNo));
+      const created = index === -1;
+      
+      const record = {};
+      headers.forEach((header) => {
+        record[header] = created ? "" : records[index][header] || "";
+      });
+      Object.assign(record, knownFields);
+
+      if (!record.CaseMasterID) record.CaseMasterID = nextNumericValue(records, "CaseMasterID", 1);
+      if (!record.CaseNo) {
+        const year = new Date().getFullYear();
+        record.CaseNo = nextNumericValue(records, "CaseNo", Number(`${year}00001`));
+      }
+      if (!record.CrimeNo) record.CrimeNo = generateCrimeNo(records);
+      recalcDerivedFields(record);
+      
+      await upsertCaseInGoogle(record);
+      
+      // Simulate Push Notification
+      try {
+        const MASTER_SHEET_ID = process.env.GOOGLE_CONSOLIDATED_SHEET_ID || "1uyzVgCAPZW9CkzkNHFKH0QOJm_nbn5Sr4ul9ngv0ZoM";
+        const employeesTab = await readTable(MASTER_SHEET_ID, "Employee");
+        const unitsTab = await readTable(MASTER_SHEET_ID, "Unit");
+        
+        const station = record.PoliceStation || record.Station;
+        if (station) {
+          let targetUnitId = String(station);
+          const unitMatch = unitsTab.rows.find(u => u.UnitName && u.UnitName.trim().toLowerCase() === station.trim().toLowerCase());
+          if (unitMatch) {
+            targetUnitId = String(unitMatch.UnitID);
+          }
+
+          const matchingEmployees = employeesTab.rows.filter(e => 
+            String(e.UnitID) === targetUnitId && e.PhoneNumber && e.PhoneNumber.trim() !== ""
+          );
+          if (matchingEmployees.length > 0) {
+            console.log(`\n[PUSH NOTIFICATION TRIGGER]`);
+            console.log(`Case Update: ${record.CrimeNo || record.CaseNo} at ${station}`);
+            matchingEmployees.forEach(emp => {
+              console.log(` -> Sending SMS/Push to Officer ${emp.Name} at ${emp.PhoneNumber}`);
+            });
+            console.log(`---------------------------\n`);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to simulate push notification:", err);
+      }
       sendJson(res, 200, {
         ok: true,
-        created: result.created,
-        headers: result.headers,
-        case: result.record,
-        options: buildOptions(result.records),
-        sync: result.sync,
+        created,
+        headers,
+        case: record,
+        options: buildOptions(records), // Might be slightly outdated compared to the just pushed row, but acceptable
+        sync: { ok: true, skipped: false, message: "Directly saved to Google Sheets" },
       });
       return;
     }
 
-    if ((req.method === "PATCH" || req.method === "PUT") && caseMatch) {
-      const payload = await readBody(req);
-      const result = upsertCase(caseMatch[1], payload);
-      sendJson(res, 200, {
-        ok: true,
-        created: result.created,
-        headers: result.headers,
-        case: result.record,
-        options: buildOptions(result.records),
-        sync: result.sync,
-      });
-      return;
-    }
-
-    sendError(res, 404, "Unknown local_db API endpoint.");
+    sendError(res, 404, "Unknown API endpoint.");
   } catch (error) {
     sendError(res, 500, error);
   }

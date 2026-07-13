@@ -2,9 +2,11 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
+import { auth } from "../firebase";
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, updatePassword } from "firebase/auth";
 
 const ChangePassword: React.FC = () => {
-  const { user, changePassword, theme, toggleTheme } = useAuth();
+  const { user, changePassword, logout, theme, toggleTheme } = useAuth();
   const navigate = useNavigate();
   const { language, setLanguage, tr } = useLanguage();
 
@@ -15,24 +17,73 @@ const ChangePassword: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (current.length < 6)
-      return setError(tr("Current password must be at least 6 characters.", "ಪ್ರಸ್ತುತ ಪಾಸ್‌ವರ್ಡ್ ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳಿರಬೇಕು."));
-    if (next.length < 8) return setError(tr("New password must be at least 8 characters.", "ಹೊಸ ಪಾಸ್‌ವರ್ಡ್ ಕನಿಷ್ಠ 8 ಅಕ್ಷರಗಳಿರಬೇಕು."));
-    if (!/[A-Za-z]/.test(next) || !/\d/.test(next))
-      return setError(tr("Use a mix of letters and numbers in your new password.", "ಹೊಸ ಪಾಸ್‌ವರ್ಡ್‌ನಲ್ಲಿ ಅಕ್ಷರಗಳು ಮತ್ತು ಸಂಖ್ಯೆಗಳನ್ನು ಬಳಸಿ."));
+    if (current.length < 4)
+      return setError(tr("Current password must be at least 4 characters.", "ಪ್ರಸ್ತುತ ಪಾಸ್‌ವರ್ಡ್ ಕನಿಷ್ಠ 4 ಅಕ್ಷರಗಳಿರಬೇಕು."));
+    if (next.length < 6) return setError(tr("New password must be at least 6 characters.", "ಹೊಸ ಪಾಸ್‌ವರ್ಡ್ ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳಿರಬೇಕು."));
     if (next === current) return setError(tr("New password must differ from the current one.", "ಹೊಸ ಪಾಸ್‌ವರ್ಡ್ ಪ್ರಸ್ತುತ ಪಾಸ್‌ವರ್ಡ್‌ನಿಂದ ಭಿನ್ನವಾಗಿರಬೇಕು."));
     if (next !== confirm) return setError(tr("New password and confirmation do not match.", "ಹೊಸ ಪಾಸ್‌ವರ್ಡ್ ಮತ್ತು ದೃಢೀಕರಣ ಹೊಂದಿಕೆಯಾಗುವುದಿಲ್ಲ."));
 
     setSubmitting(true);
-    setTimeout(() => {
-      changePassword(next);
-      setSubmitting(false);
+    try {
+      const email = `${user?.employeeId}@ksph.gov.in`.toLowerCase();
+      
+      let firebaseUser = null;
+      let validCurrentPassword = false;
+
+      try {
+        const userCredential = await signInWithEmailAndPassword(auth, email, current);
+        firebaseUser = userCredential.user;
+        validCurrentPassword = true;
+      } catch (fbErr: any) {
+        // Firebase auth failed
+      }
+
+      if (!validCurrentPassword && user?.isFirstLogin) {
+        const loginRes = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ employeeId: user?.employeeId, password: current })
+        });
+        const loginData = await loginRes.json();
+        if (loginRes.ok && loginData.ok) {
+          validCurrentPassword = true;
+        }
+      }
+
+      if (!validCurrentPassword) {
+        throw new Error(tr("Incorrect current password.", "ತಪ್ಪಾದ ಪ್ರಸ್ತುತ ಪಾಸ್‌ವರ್ಡ್."));
+      }
+
+      if (firebaseUser) {
+        await updatePassword(firebaseUser, next);
+      } else {
+        try {
+          await createUserWithEmailAndPassword(auth, email, next);
+        } catch (err: any) {
+          if (err.code === "auth/email-already-in-use") {
+            throw new Error(tr("Account is partially set up. Please use your NEW password as the 'Current password'.", "ಖಾತೆ ಭಾಗಶಃ ಹೊಂದಿಸಲಾಗಿದೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಹೊಸ ಪಾಸ್‌ವರ್ಡ್ ಅನ್ನು 'ಪ್ರಸ್ತುತ ಪಾಸ್‌ವರ್ಡ್' ಆಗಿ ಬಳಸಿ."));
+          }
+          throw err;
+        }
+      }
+
+      await fetch("/api/employee/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: user?.employeeId, hasLoggedIn: true }),
+      });
+
+      await changePassword(next);
       navigate("/", { replace: true });
-    }, 300);
+    } catch (err: any) {
+      setError(err.message || tr("Failed to update password.", "ಪಾಸ್‌ವರ್ಡ್ ನವೀಕರಿಸಲು ವಿಫಲವಾಗಿದೆ."));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -93,7 +144,7 @@ const ChangePassword: React.FC = () => {
             onChange={setCurrent}
             type={showAll ? "text" : "password"}
             autoComplete="current-password"
-            placeholder={tr("Your temporary password", "ನಿಮ್ಮ ತಾತ್ಕಾಲಿಕ ಪಾಸ್‌ವರ್ಡ್")}
+            placeholder={user?.isFirstLogin ? tr("e.g. First 4 letters of name + DOB year", "ಉದಾ: ಹೆಸರಿನ ಮೊದಲ 4 ಅಕ್ಷರಗಳು + ಹುಟ್ಟಿದ ವರ್ಷ") : tr("Your temporary password", "ನಿಮ್ಮ ತಾತ್ಕಾಲಿಕ ಪಾಸ್‌ವರ್ಡ್")}
           />
           <Field
             label={tr("New password", "ಹೊಸ ಪಾಸ್‌ವರ್ಡ್")}
@@ -101,7 +152,7 @@ const ChangePassword: React.FC = () => {
             onChange={setNext}
             type={showAll ? "text" : "password"}
             autoComplete="new-password"
-            placeholder={tr("At least 8 characters", "ಕನಿಷ್ಠ 8 ಅಕ್ಷರಗಳು")}
+            placeholder={tr("At least 6 characters", "ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳು")}
           />
           <Field
             label={tr("Confirm new password", "ಹೊಸ ಪಾಸ್‌ವರ್ಡ್ ದೃಢೀಕರಿಸಿ")}
@@ -130,13 +181,27 @@ const ChangePassword: React.FC = () => {
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full bg-brand hover:bg-brand/90 disabled:opacity-60 transition text-white font-medium rounded-lg py-2.5 shadow-glow"
-          >
-            {submitting ? tr("Updating…", "ನವೀಕರಿಸಲಾಗುತ್ತಿದೆ…") : tr("Update password and continue", "ಪಾಸ್‌ವರ್ಡ್ ನವೀಕರಿಸಿ ಮುಂದುವರಿಸಿ")}
-          </button>
+          <div className="flex flex-col gap-3 mt-2">
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full bg-brand hover:bg-brand/90 disabled:opacity-60 transition text-white font-medium rounded-lg py-2.5 shadow-glow"
+            >
+              {submitting ? tr("Updating…", "ನವೀಕರಿಸಲಾಗುತ್ತಿದೆ…") : tr("Update password and continue", "ಪಾಸ್‌ವರ್ಡ್ ನವೀಕರಿಸಿ ಮುಂದುವರಿಸಿ")}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                logout();
+                navigate("/login", { replace: true });
+              }}
+              disabled={submitting}
+              className="w-full bg-transparent hover:bg-line/50 border border-line text-muted transition font-medium rounded-lg py-2.5"
+            >
+              {tr("Back to Login", "ಲಾಗಿನ್‌ಗೆ ಹಿಂತಿರುಗಿ")}
+            </button>
+          </div>
         </form>
       </div>
     </div>
@@ -173,10 +238,7 @@ const Field: React.FC<{
 const PasswordHints: React.FC<{ pwd: string }> = ({ pwd }) => {
   const { tr } = useLanguage();
   const checks = [
-    { ok: pwd.length >= 8, label: tr("At least 8 characters", "ಕನಿಷ್ಠ 8 ಅಕ್ಷರಗಳು") },
-    { ok: /[A-Za-z]/.test(pwd), label: tr("Contains letters", "ಅಕ್ಷರಗಳನ್ನು ಒಳಗೊಂಡಿದೆ") },
-    { ok: /\d/.test(pwd), label: tr("Contains numbers", "ಸಂಖ್ಯೆಗಳನ್ನು ಒಳಗೊಂಡಿದೆ") },
-    { ok: /[^A-Za-z0-9]/.test(pwd), label: tr("Contains a symbol", "ವಿಶೇಷ ಚಿಹ್ನೆಯನ್ನು ಒಳಗೊಂಡಿದೆ") },
+    { ok: pwd.length >= 6, label: tr("At least 6 characters", "ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳು") },
   ];
   const score = checks.filter((c) => c.ok).length;
 
@@ -188,11 +250,7 @@ const PasswordHints: React.FC<{ pwd: string }> = ({ pwd }) => {
             key={i}
             className={`h-1 flex-1 rounded ${
               i < score
-                ? score <= 1
-                  ? "bg-rose"
-                  : score <= 3
-                  ? "bg-amber"
-                  : "bg-sage"
+                ? "bg-sage"
                 : "bg-line"
             }`}
           />

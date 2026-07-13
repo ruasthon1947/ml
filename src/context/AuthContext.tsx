@@ -16,8 +16,8 @@ type Theme = "dark" | "light";
 
 type AuthContextValue = {
   user: AuthUser | null;
-  login: (employeeId: string, password: string) => { ok: boolean; error?: string };
-  changePassword: (newPassword: string) => void;
+  login: (employeeId: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  changePassword: (newPassword: string) => Promise<void>;
   logout: () => void;
   theme: Theme;
   setTheme: (t: Theme) => void;
@@ -32,13 +32,6 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 // LocalStorage keys (kept scoped so admin tools / tests stay clean)
 const LS_USER = "kpfir.user";
 const LS_THEME = "kpfir.theme";
-const LS_PASSWORD = "kpfir.password"; // demo only — never do this in production
-
-// Demo credentials so the page is usable without a backend.
-// First-time login: any employee ID with password "First@123" triggers the prompt.
-// Regular login: any ID + password "police@2026".
-const DEMO_FIRST_LOGIN_PASSWORD = "First@123";
-const DEMO_DEFAULT_PASSWORD = "police@2026";
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
@@ -73,7 +66,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     localStorage.setItem(LS_THEME, theme);
   }, [theme]);
 
-  const login: AuthContextValue["login"] = (employeeId, password) => {
+  const login: AuthContextValue["login"] = async (employeeId, password) => {
     // Every fresh login opens the application in light mode.
     setThemeState("light");
     localStorage.setItem(LS_THEME, "light");
@@ -82,47 +75,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     if (!id) return { ok: false, error: "Employee ID is required." };
     if (!password) return { ok: false, error: "Password is required." };
 
-    // Allow any ID, but passwords are what drive the first-time vs normal path.
-    if (password === DEMO_FIRST_LOGIN_PASSWORD) {
+    let firebaseAuthSuccess = false;
+    try {
+      const { auth } = await import("../firebase");
+      const { signInWithEmailAndPassword } = await import("firebase/auth");
+      const email = `${id}@ksph.gov.in`.toLowerCase();
+      await signInWithEmailAndPassword(auth, email, password);
+      firebaseAuthSuccess = true;
+    } catch (fbErr: any) {
+      // Firebase auth failed, maybe first time login. Fallback to /api/login which checks Google Sheets FirstAuth.
+    }
+
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: id, password, firebaseAuth: firebaseAuthSuccess })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        return { ok: false, error: data.error || "Invalid credentials. Try again." };
+      }
+      
       const u: AuthUser = {
         employeeId: id,
-        name: deriveName(id),
-        isFirstLogin: true,
+        name: data.name || id,
+        isFirstLogin: data.isFirstLogin,
       };
       setUser(u);
       localStorage.setItem(LS_USER, JSON.stringify(u));
-      const now=new Date().toISOString(); setLastLogin(now); localStorage.setItem("kpfir.lastLogin",now); setSessionExpiresAt(Date.now()+30*60*1000);
+      const now = new Date().toISOString(); 
+      setLastLogin(now); 
+      localStorage.setItem("kpfir.lastLogin", now); 
+      setSessionExpiresAt(Date.now() + 30 * 60 * 1000);
       return { ok: true };
+    } catch (err) {
+      return { ok: false, error: "Network error. Try again later." };
     }
-    if (password === DEMO_DEFAULT_PASSWORD) {
-      const u: AuthUser = {
-        employeeId: id,
-        name: deriveName(id),
-        isFirstLogin: false,
-      };
-      setUser(u);
-      localStorage.setItem(LS_USER, JSON.stringify(u));
-      const now=new Date().toISOString(); setLastLogin(now); localStorage.setItem("kpfir.lastLogin",now); setSessionExpiresAt(Date.now()+30*60*1000);
-      return { ok: true };
-    }
-    return { ok: false, error: "Invalid credentials. Try again." };
   };
 
-  const changePassword = (newPassword: string) => {
+  const changePassword = async (newPassword: string) => {
     if (!user) return;
     const updated: AuthUser = { ...user, isFirstLogin: false };
     setUser(updated);
     localStorage.setItem(LS_USER, JSON.stringify(updated));
-    try {
-      localStorage.setItem(LS_PASSWORD, newPassword);
-    } catch {
-      /* ignore */
-    }
   };
 
   const logout = () => {
     setUser(null);
     localStorage.removeItem(LS_USER);
+    localStorage.removeItem("kpfir.phoneNumber");
     setSessionExpiresAt(null);
   };
 
