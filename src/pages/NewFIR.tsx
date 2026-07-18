@@ -16,6 +16,7 @@ import {
   useCases,
 } from "../lib/cases";
 import { useAuth } from "../context/AuthContext";
+import { askCopilot } from "../lib/chatApi";
 
 const STEPS = [
   {
@@ -284,6 +285,10 @@ const syncMessage = (sync: { ok: boolean; skipped?: boolean; message?: string; s
   return `Local save complete, but Google sync needs attention: ${sync.stderr || sync.message || "script failed"}`;
 };
 
+let globalFormCache: Record<string, string> | null = null;
+let globalComplaintCache: string = "";
+let globalAiReadyCache: boolean = false;
+
 const NewFIR: React.FC = () => {
   const { tr } = useLanguage();
   const navigate = useNavigate();
@@ -294,13 +299,13 @@ const NewFIR: React.FC = () => {
 
   const existingCase = useMemo(() => findCase(cases, id), [cases, id]);
   const [loadedKey, setLoadedKey] = useState("");
-  const [form, setForm] = useState<FormState>(() => emptyForm());
   const [step, setStep] = useState(1);
   const [highestUnlocked, setHighestUnlocked] = useState(editing ? STEPS.length : 1);
   const [persistedCaseId, setPersistedCaseId] = useState("");
-  const [complaint, setComplaint] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiReady, setAiReady] = useState(false);
+  const [form, setForm] = useState<FormState>(() => globalFormCache || emptyForm());
+  const [complaint, setComplaint] = useState<string>(() => globalComplaintCache);
+  const [aiReady, setAiReady] = useState<boolean>(() => globalAiReadyCache);
   const [saveState, setSaveState] = useState<SaveState>({
     status: "idle",
     message: "",
@@ -317,6 +322,12 @@ const NewFIR: React.FC = () => {
       setLoadedKey(key);
     }
   }, [editing, existingCase, loadedKey]);
+
+  useEffect(() => {
+    globalFormCache = form;
+    globalComplaintCache = complaint;
+    globalAiReadyCache = aiReady;
+  }, [form, complaint, aiReady]);
 
   const persisted = Boolean(persistedCaseId || form.CaseMasterID);
   const meta = STEPS[step - 1];
@@ -377,30 +388,96 @@ const NewFIR: React.FC = () => {
     const result = await saveCurrentStep(true);
     if (result) {
       if (result.sync.ok) {
+        // Clear the cache values so the next new case workspace starts fresh
+        globalFormCache = null;
+        globalComplaintCache = "";
+        globalAiReadyCache = false;
+
         setSuccessRoute(`/fir/${caseRoute(result.case)}`);
       }
     }
   };
 
-  const generateDraft = () => {
+  const generateDraft = async () => {
     if (!complaint.trim()) return;
     setAiLoading(true);
-    window.setTimeout(() => {
+    setSaveState({ status: "idle", message: "" });
+    
+try {
+      const systemPrompt = `Analyze this police complaint text and extract structural parameters for system fields. 
+      You MUST respond ONLY with a raw JSON object. Do not include any introductory text, no conversational explanations, no markdown formatting, and NO backticks (\`\`\`).
+      
+      Expected JSON Structure:
+      {
+        "CrimeHead": "Category like Cyber Crime, Theft, Assault, etc.",
+        "CrimeSubHead": "Specific subcategory matching the context",
+        "Complainant": "Full Name of individual reporting",
+        "AccusedNames": "Semicolon separated list of names, or 'Unknown'",
+        "VictimNames": "Semicolon separated list of victims",
+        "Acts": "Applicable laws like BNS, IT Act",
+        "Sections": "Specific law sections if referenced",
+        "BriefFacts": "A structured legal narrative paragraph summary of the event"
+      }
+
+      Text to parse: "${complaint}"`;
+
+      const rawAiReply = await askCopilot({
+        question: systemPrompt,
+        role: (user as any)?.role ?? "Inspector",
+        stationId: (user as any)?.policeStation,
+        language: "en"
+      });
+
+      // 1. Bulletproof Cleaning: Strip away markdown code block wrappers, backticks, or trailing notes
+      let cleanJsonStr = rawAiReply.trim();
+      if (cleanJsonStr.includes("```")) {
+        cleanJsonStr = cleanJsonStr.replace(/```json|```/gi, "").trim();
+      }
+      
+      // Find the first '{' and last '}' just in case the model added conversational prefix/suffix text
+      const firstBrace = cleanJsonStr.indexOf("{");
+      const lastBrace = cleanJsonStr.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace !== -1) {
+        cleanJsonStr = cleanJsonStr.substring(firstBrace, lastBrace + 1);
+      }
+
+      const parsedData = JSON.parse(cleanJsonStr);
+
+      // Programmatically mapping fields directly into the React FormState context
       setForm((current) => ({
         ...current,
-        BriefFacts: complaint,
-        CrimeHead: current.CrimeHead || "Cyber Crime",
-        CrimeSubHead: current.CrimeSubHead || "Online Financial Fraud",
-        Complainant: current.Complainant || "Ananya Rao",
-        AccusedNames: current.AccusedNames || "Unknown",
-        Acts: current.Acts || "BNS; IT Act",
-        Sections: current.Sections || "318(4); 66D",
+        BriefFacts: parsedData.BriefFacts || complaint,
+        CrimeHead: parsedData.CrimeHead || current.CrimeHead || "General Offence",
+        CrimeSubHead: parsedData.CrimeSubHead || current.CrimeSubHead || "",
+        Complainant: parsedData.Complainant || current.Complainant || "",
+        AccusedNames: parsedData.AccusedNames || current.AccusedNames || "Unknown",
+        VictimNames: parsedData.VictimNames || current.VictimNames || "",
+        Acts: parsedData.Acts || current.Acts || "BNS",
+        Sections: parsedData.Sections || current.Sections || "",
       }));
-      setAiReady(true);
-      setAiLoading(false);
-    }, 500);
-  };
 
+      setAiReady(true);
+      setSaveState({ 
+        status: "saved", 
+        message: "AI Assistant successfully extracted details and auto-filled all 7 tabs! Please review before saving." 
+      });
+    } catch (err) {
+      console.error("[Autonomous Auto-Fill Failure]:", err);
+      setSaveState({ 
+        status: "error", 
+        message: "AI Draft extraction failed to format cleanly. Falling back to simple facts text mapping." 
+      });
+      
+      // Fixed: Properly closed state updater function
+      setForm((current) => ({
+        ...current,
+        BriefFacts: complaint
+      })); // 💻 <- Ensure this closing block contains both ) and }
+    } finally {
+      setAiLoading(false);
+    }
+  };
+  
   const stationOptions = optionList(options, "PoliceStation");
   const crimeHeadOptions = optionList(options, "CrimeHead");
   const crimeSubHeadOptions = subHeadOptions(options, form.CrimeHead);
@@ -554,14 +631,14 @@ const NewFIR: React.FC = () => {
               placeholder="Describe what happened, who reported it, where and when..."
               className="w-full resize-none bg-panel border border-line rounded-xl p-3 text-sm text-white placeholder-muted outline-none focus:border-brand/50"
             />
-            <button
-              type="button"
-              onClick={generateDraft}
-              disabled={!complaint.trim() || aiLoading}
-              className="lg:w-48 rounded-xl bg-brand px-5 py-3 text-sm font-medium text-white disabled:opacity-40"
+           <button
+            type="button"
+            onClick={generateDraft}
+            disabled={!complaint.trim() || aiLoading}
+            className="lg:w-48 rounded-xl bg-brand px-5 py-3 text-sm font-medium text-white disabled:opacity-40 transition hover:bg-brand/90"
             >
-              {aiLoading ? "Analysing..." : aiReady ? "Refresh draft" : "Generate draft"}
-            </button>
+            {aiLoading ? "Analyzing text..." : aiReady ? "Refresh Auto-Fill" : "Run Autonomous Fill"}
+          </button>
           </div>
 
           {saveState.message && (
