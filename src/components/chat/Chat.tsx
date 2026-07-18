@@ -1,10 +1,11 @@
+// src/pages/Chat.tsx
 import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { useLanguage } from "../../context/LanguageContext";
 import { askCopilot } from "../../lib/chatApi";
 import { VoiceButton } from "./VoiceButton";
 
-// Shared structural shape matching the one defined in AuthContext
 type Msg = { id: string; role: "user" | "assistant"; content: string; ts: number };
 
 const timeOfDay = () => {
@@ -13,24 +14,23 @@ const timeOfDay = () => {
 };
 
 export const Chat: React.FC = () => {
-  const { user, chatHistory, setChatHistory, isChatBusy, setIsChatBusy } = useAuth(); // Consume from context
+  const { user, chatHistory, setChatHistory, isChatBusy, setIsChatBusy } = useAuth();
   const { language, tr } = useLanguage();
+  const navigate = useNavigate();
   const [input, setInput] = useState("");
-  // REMOVED: const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [, force] = useState(0);
 
-  // Auto-scroll logic tracks global changes
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory, isChatBusy]);
   useEffect(() => { const id = setInterval(() => force((n) => n + 1), 60_000); return () => clearInterval(id); }, []);
 
   const send = async (text?: string) => {
     const trimmed = (text ?? input).trim();
-    if (!trimmed || isChatBusy) return; // Use global variable
+    if (!trimmed || isChatBusy) return;
 
     setChatHistory((m: any) => [...m, { id: crypto.randomUUID(), role: "user", content: trimmed, ts: Date.now() }]);
     setInput("");
-    setIsChatBusy(true); // Set global variable
+    setIsChatBusy(true);
 
     try {
       const reply = await askCopilot({
@@ -48,7 +48,7 @@ export const Chat: React.FC = () => {
       );
       setChatHistory((m: any) => [...m, { id: crypto.randomUUID(), role: "assistant", content: errorMsg, ts: Date.now() }]);
     } finally {
-      setIsChatBusy(false); // Clear global variable
+      setIsChatBusy(false);
     }
   };
 
@@ -74,7 +74,7 @@ export const Chat: React.FC = () => {
       {chatHistory.length === 0 ? (
         <EmptyCanvas greeting={greeting} help={tr("How can I help you today?", "ಇಂದು ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?")} />
       ) : (
-        <MessageList messages={chatHistory as any} busy={isChatBusy} /> // Forward global variable
+        <MessageList messages={chatHistory as any} busy={isChatBusy} />
       )}
       <div ref={endRef} />
 
@@ -85,7 +85,8 @@ export const Chat: React.FC = () => {
             onChange={setInput}
             onSend={() => send()}
             onVoiceResult={(text) => send(text)}
-            busy={isChatBusy} // Forward global variable
+            onNavigateToFir={() => navigate("/fir/new")}
+            busy={isChatBusy}
             tr={tr}
             language={language === "kn" ? "kn" : "en"}
           />
@@ -135,6 +136,7 @@ const Bubble: React.FC<{ msg: Msg }> = ({ msg }) => {
     </div>
   );
 };
+
 const TypingBubble = () => (
   <div className="flex items-start gap-3">
     <div className="h-8 w-8 rounded-full bg-brand grid place-items-center text-white text-xs font-semibold">AI</div>
@@ -145,6 +147,7 @@ const TypingBubble = () => (
     </div>
   </div>
 );
+
 const Formatted: React.FC<{ text: string }> = ({ text }) => (
   <>
     {text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
@@ -152,22 +155,35 @@ const Formatted: React.FC<{ text: string }> = ({ text }) => (
     )}
   </>
 );
+
 const Composer: React.FC<{
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
   onVoiceResult: (text: string) => void;
+  onNavigateToFir: () => void;
   busy: boolean;
   tr: (en: string, kn: string) => string;
   language: "en" | "kn";
-}> = ({ value, onChange, onSend, onVoiceResult, busy, tr, language }) => {
+}> = ({ value, onChange, onSend, onVoiceResult, onNavigateToFir, busy, tr, language }) => {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = Math.min(180, ta.scrollHeight) + "px";
   }, [value]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      console.log(`[File System] Selected file for upload: ${file.name}`);
+      // File handle payload hook goes here
+    }
+  };
+
   return (
     <div className="bg-shell border border-line rounded-2xl px-4 py-3 focus-within:border-brand/50 focus-within:ring-2 focus-within:ring-brand/15 shadow-soft">
       <textarea
@@ -183,9 +199,33 @@ const Composer: React.FC<{
         className="w-full bg-transparent text-white placeholder-muted outline-none resize-none text-sm leading-relaxed"
       />
       <div className="flex items-center gap-1 mt-1">
-        <button className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel" title={tr("Attach a file", "ಫೈಲ್ ಲಗತ್ತಿಸಿ")}>＋</button>
+        {/* Functional File Upload Panel Context */}
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          onChange={handleFileChange} 
+          className="hidden" 
+          accept="image/*,.pdf,.doc,.docx"
+        />
+        <button 
+          onClick={() => fileInputRef.current?.click()} 
+          className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel" 
+          title={tr("Attach a file or picture", "ಫೈಲ್ ಅಥವಾ ಚಿತ್ರವನ್ನು ಲಗತ್ತಿಸಿ")}
+        >
+          ＋
+        </button>
+        
         <VoiceButton language={language} onResult={(text) => onVoiceResult(text)} />
-        <button className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel" title={tr("Web search", "ವೆಬ್ ಹುಡುಕಾಟ")}>◎</button>
+        
+        {/* Dynamic New FIR Page Shortcut Redirector */}
+        <button 
+          onClick={onNavigateToFir} 
+          className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel font-medium text-xs" 
+          title={tr("New FIR Wizard", "ಹೊಸ ಎಫ್‌ಐಆರ್")}
+        >
+          <strong>FIR</strong>
+        </button>
+
         <div className="flex-1" />
         <button onClick={onSend} disabled={busy || !value.trim()} className="h-8 w-8 grid place-items-center rounded-full bg-brand text-white disabled:opacity-40 hover:bg-brand/90 transition">↗</button>
       </div>
