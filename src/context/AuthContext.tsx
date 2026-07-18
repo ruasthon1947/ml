@@ -15,6 +15,14 @@ export type AuthUser = {
 
 type Theme = "dark" | "light";
 
+// Define a structural shape for messages to keep the state strongly typed
+export type ChatMessage = {
+  id: string;
+  sender: "user" | "ai";
+  text: string;
+  timestamp: string;
+};
+
 type AuthContextValue = {
   user: AuthUser | null;
   login: (employeeId: string, password: string) => Promise<{ ok: boolean; error?: string }>;
@@ -26,6 +34,11 @@ type AuthContextValue = {
   sessionExpiresAt: number | null;
   extendSession: () => void;
   lastLogin: string | null;
+  // Plan Two additions: Persistent chat memory access fields
+  chatHistory: ChatMessage[];
+  setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
+  isChatBusy: boolean;
+  setIsChatBusy: React.Dispatch<React.SetStateAction<boolean>>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -58,6 +71,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     return "light";
   });
 
+  // Global React state for your AI Copilot chat records and busy indicator
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [isChatBusy, setIsChatBusy] = useState<boolean>(false);
+
   useEffect(() => {
     const root = document.documentElement;
     root.classList.remove("light", "dark");
@@ -87,7 +104,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       console.log("[Auth Diagnostic] Firebase standard identity verification completed successfully.");
     } catch (fbErr: any) {
       console.warn("[Auth Diagnostic] Firebase pipeline bypassed or rejected validation context:", fbErr.message);
-      // Firebase auth failed, maybe first time login. Fallback to /api/login which checks Google Sheets FirstAuth.
     }
 
     try {
@@ -136,6 +152,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const logout = () => {
     setUser(null);
+    setChatHistory([]); // Wipes active conversation securely from internal state memory upon logouts
+    setIsChatBusy(false); // Resets the active loader flag layout safely
     localStorage.removeItem(LS_USER);
     localStorage.removeItem("kpfir.phoneNumber");
     setSessionExpiresAt(null);
@@ -147,8 +165,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const toggleTheme = () => setThemeState((t) => (t === "dark" ? "light" : "dark"));
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, login, changePassword, logout, theme, setTheme, toggleTheme, sessionExpiresAt, extendSession, lastLogin }),
-    [user, theme, sessionExpiresAt, lastLogin]
+    () => ({ 
+      user, 
+      login, 
+      changePassword, 
+      logout, 
+      theme, 
+      setTheme, 
+      toggleTheme, 
+      sessionExpiresAt, 
+      extendSession, 
+      lastLogin,
+      chatHistory,
+      setChatHistory,
+      isChatBusy,
+      setIsChatBusy
+    }),
+    [user, theme, sessionExpiresAt, lastLogin, chatHistory, isChatBusy]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

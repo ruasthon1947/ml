@@ -4,6 +4,7 @@ import { useLanguage } from "../../context/LanguageContext";
 import { askCopilot } from "../../lib/chatApi";
 import { VoiceButton } from "./VoiceButton";
 
+// Shared structural shape matching the one defined in AuthContext
 type Msg = { id: string; role: "user" | "assistant"; content: string; ts: number };
 
 const timeOfDay = () => {
@@ -12,24 +13,24 @@ const timeOfDay = () => {
 };
 
 export const Chat: React.FC = () => {
-  const { user } = useAuth();
+  const { user, chatHistory, setChatHistory, isChatBusy, setIsChatBusy } = useAuth(); // Consume from context
   const { language, tr } = useLanguage();
-  const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  // REMOVED: const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [, force] = useState(0);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // Auto-scroll logic tracks global changes
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory, isChatBusy]);
   useEffect(() => { const id = setInterval(() => force((n) => n + 1), 60_000); return () => clearInterval(id); }, []);
 
   const send = async (text?: string) => {
     const trimmed = (text ?? input).trim();
-    if (!trimmed || busy) return;
+    if (!trimmed || isChatBusy) return; // Use global variable
 
-    setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", content: trimmed, ts: Date.now() }]);
+    setChatHistory((m: any) => [...m, { id: crypto.randomUUID(), role: "user", content: trimmed, ts: Date.now() }]);
     setInput("");
-    setBusy(true);
+    setIsChatBusy(true); // Set global variable
 
     try {
       const reply = await askCopilot({
@@ -38,16 +39,16 @@ export const Chat: React.FC = () => {
         stationId: (user as any)?.policeStation,
         language: language === "kn" ? "kn" : "en",
       });
-      setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", content: reply, ts: Date.now() }]);
+      setChatHistory((m: any) => [...m, { id: crypto.randomUUID(), role: "assistant", content: reply, ts: Date.now() }]);
     } catch (err) {
       console.error(err);
       const errorMsg = tr(
         "Sorry, I couldn't process that request. Please try again.",
         "ಕ್ಷಮಿಸಿ, ಆ ವಿನಂತಿಯನ್ನು ಪ್ರಕ್ರಿಯೆಗೊಳಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ."
       );
-      setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", content: errorMsg, ts: Date.now() }]);
+      setChatHistory((m: any) => [...m, { id: crypto.randomUUID(), role: "assistant", content: errorMsg, ts: Date.now() }]);
     } finally {
-      setBusy(false);
+      setIsChatBusy(false); // Clear global variable
     }
   };
 
@@ -65,15 +66,15 @@ export const Chat: React.FC = () => {
           <span className="text-white font-medium">{tr("Karnataka Police Copilot", "ಕರ್ನಾಟಕ ಪೊಲೀಸ್ ಕೋಪೈಲಟ್")}</span>
         </div>
         <div className="flex-1" />
-        <button onClick={() => setMessages([])} className="text-xs text-white bg-brand/15 border border-brand/30 px-3 py-1.5 rounded-md hover:bg-brand/25">
+        <button onClick={() => { setChatHistory([]); setIsChatBusy(false); }} className="text-xs text-white bg-brand/15 border border-brand/30 px-3 py-1.5 rounded-md hover:bg-brand/25">
           {tr("New session", "ಹೊಸ ಸೆಷನ್")}
         </button>
       </div>
 
-      {messages.length === 0 ? (
+      {chatHistory.length === 0 ? (
         <EmptyCanvas greeting={greeting} help={tr("How can I help you today?", "ಇಂದು ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?")} />
       ) : (
-        <MessageList messages={messages} busy={busy} />
+        <MessageList messages={chatHistory as any} busy={isChatBusy} /> // Forward global variable
       )}
       <div ref={endRef} />
 
@@ -84,7 +85,7 @@ export const Chat: React.FC = () => {
             onChange={setInput}
             onSend={() => send()}
             onVoiceResult={(text) => send(text)}
-            busy={busy}
+            busy={isChatBusy} // Forward global variable
             tr={tr}
             language={language === "kn" ? "kn" : "en"}
           />
@@ -134,7 +135,6 @@ const Bubble: React.FC<{ msg: Msg }> = ({ msg }) => {
     </div>
   );
 };
-
 const TypingBubble = () => (
   <div className="flex items-start gap-3">
     <div className="h-8 w-8 rounded-full bg-brand grid place-items-center text-white text-xs font-semibold">AI</div>
@@ -145,7 +145,6 @@ const TypingBubble = () => (
     </div>
   </div>
 );
-
 const Formatted: React.FC<{ text: string }> = ({ text }) => (
   <>
     {text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
@@ -153,7 +152,6 @@ const Formatted: React.FC<{ text: string }> = ({ text }) => (
     )}
   </>
 );
-
 const Composer: React.FC<{
   value: string;
   onChange: (v: string) => void;
