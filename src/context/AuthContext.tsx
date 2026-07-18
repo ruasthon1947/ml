@@ -1,3 +1,4 @@
+// src/context/AuthContext.tsx
 import React, {
   createContext,
   useContext,
@@ -29,7 +30,6 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-// LocalStorage keys (kept scoped so admin tools / tests stay clean)
 const LS_USER = "kpfir.user";
 const LS_THEME = "kpfir.theme";
 
@@ -46,7 +46,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   });
 
   const [lastLogin, setLastLogin] = useState<string | null>(() => localStorage.getItem("kpfir.lastLogin"));
-  const [sessionExpiresAt, setSessionExpiresAt] = useState<number | null>(() => localStorage.getItem(LS_USER) ? Date.now()+30*60*1000 : null);
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<number | null>(() => localStorage.getItem(LS_USER) ? Date.now() + 30 * 60 * 1000 : null);
 
   const [theme, setThemeState] = useState<Theme>(() => {
     try {
@@ -58,7 +58,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     return "light";
   });
 
-  // Apply theme class to <html> so our css overrides kick in
   useEffect(() => {
     const root = document.documentElement;
     root.classList.remove("light", "dark");
@@ -67,7 +66,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [theme]);
 
   const login: AuthContextValue["login"] = async (employeeId, password) => {
-    // Every fresh login opens the application in light mode.
     setThemeState("light");
     localStorage.setItem(LS_THEME, "light");
 
@@ -75,33 +73,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     if (!id) return { ok: false, error: "Employee ID is required." };
     if (!password) return { ok: false, error: "Password is required." };
 
+    console.log(`[Auth Diagnostic] Attempting login initialization sequence for Employee ID: ${id}`);
+
     let firebaseAuthSuccess = false;
     try {
       const { auth } = await import("../firebase");
       const { signInWithEmailAndPassword } = await import("firebase/auth");
       const email = `${id}@ksph.gov.in`.toLowerCase();
+      
+      console.log(`[Auth Diagnostic] Contacting Firebase Auth Gateway with formatted email alias: ${email}`);
       await signInWithEmailAndPassword(auth, email, password);
       firebaseAuthSuccess = true;
+      console.log("[Auth Diagnostic] Firebase standard identity verification completed successfully.");
     } catch (fbErr: any) {
+      console.warn("[Auth Diagnostic] Firebase pipeline bypassed or rejected validation context:", fbErr.message);
       // Firebase auth failed, maybe first time login. Fallback to /api/login which checks Google Sheets FirstAuth.
     }
 
     try {
+      console.log("[Auth Diagnostic] Despatching verification parameters downstream to local server endpoint: /api/login");
+      
       const response = await fetch("/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ employeeId: id, password, firebaseAuth: firebaseAuthSuccess })
       });
-      const data = await response.json();
-      if (!response.ok || !data.ok) {
-        return { ok: false, error: data.error || "Invalid credentials. Try again." };
+      
+      const data = await response.json().catch(() => null);
+      
+      if (!response.ok || !data || !data.ok) {
+        const errorMsg = data?.error || `Server responded with HTTP status code ${response.status}`;
+        console.error("[Auth Diagnostic] Validation failed on backend endpoint verification:", errorMsg);
+        return { ok: false, error: errorMsg };
       }
       
+      console.log("[Auth Diagnostic] Server login session successfully generated. Finalizing user profiles structure.");
       const u: AuthUser = {
         employeeId: id,
-        name: data.name || id,
-        isFirstLogin: data.isFirstLogin,
+        name: data.name || deriveName(id),
+        isFirstLogin: !!data.isFirstLogin,
       };
+      
       setUser(u);
       localStorage.setItem(LS_USER, JSON.stringify(u));
       const now = new Date().toISOString(); 
@@ -109,8 +121,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       localStorage.setItem("kpfir.lastLogin", now); 
       setSessionExpiresAt(Date.now() + 30 * 60 * 1000);
       return { ok: true };
-    } catch (err) {
-      return { ok: false, error: "Network error. Try again later." };
+    } catch (err: any) {
+      console.error("[Auth Diagnostic] Critical unhandled internal runtime connection breakdown:", err);
+      return { ok: false, error: `Connection breakdown during login sequence: ${err.message || "Network Timeout"}` };
     }
   };
 
@@ -128,7 +141,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setSessionExpiresAt(null);
   };
 
-  const extendSession = () => setSessionExpiresAt(Date.now()+30*60*1000);
+  const extendSession = () => setSessionExpiresAt(Date.now() + 30 * 60 * 1000);
 
   const setTheme = (t: Theme) => setThemeState(t);
   const toggleTheme = () => setThemeState((t) => (t === "dark" ? "light" : "dark"));
@@ -147,9 +160,7 @@ export const useAuth = () => {
   return ctx;
 };
 
-// Tiny helper to make the topbar greeting feel real
 function deriveName(id: string): string {
-  // id like "KA-SI-10427" -> "Inspector 10427"
   const tail = id.split("-").pop() ?? id;
   if (/^\d+$/.test(tail)) return `Officer ${tail}`;
   return id;
