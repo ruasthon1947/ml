@@ -1,6 +1,8 @@
 // src/pages/Chat.tsx
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+// @ts-ignore - html2pdf fallback import for environments without strict type declarations
+import html2pdf from "html2pdf.js";
 import { useAuth } from "../../context/AuthContext";
 import { useLanguage } from "../../context/LanguageContext";
 import { askCopilot } from "../../lib/chatApi";
@@ -18,11 +20,38 @@ export const Chat: React.FC = () => {
   const { language, tr } = useLanguage();
   const navigate = useNavigate();
   const [input, setInput] = useState("");
+  
+  // References for scrolling and target PDF export element
   const endRef = useRef<HTMLDivElement | null>(null);
+  const chatListRef = useRef<HTMLDivElement | null>(null);
   const [, force] = useState(0);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory, isChatBusy]);
   useEffect(() => { const id = setInterval(() => force((n) => n + 1), 60_000); return () => clearInterval(id); }, []);
+
+  // 🚀 PDF Export Handler
+  const exportChatToPDF = () => {
+    const element = chatListRef.current;
+    if (!element) {
+      console.warn("Chat container element not found for export.");
+      return;
+    }
+
+    const opt = {
+      margin:       [10, 10, 10, 10], // top, left, bottom, right margins in mm
+      filename:     `Karnataka_Police_Chat_Report_${new Date().toISOString().slice(0, 10)}.pdf`,
+      image:        { type: "jpeg", quality: 0.98 },
+      html2canvas:  { scale: 2, useCORS: true, logging: false },
+      jsPDF:        { unit: "mm", format: "a4", orientation: "portrait" }
+    };
+
+    try {
+      const exporter = typeof html2pdf === "function" ? html2pdf : (html2pdf as any).default;
+      exporter().from(element).set(opt).save();
+    } catch (err) {
+      console.error("PDF Export Execution Failed:", err);
+    }
+  };
 
   const send = async (text?: string) => {
     const trimmed = (text ?? input).trim();
@@ -74,7 +103,7 @@ export const Chat: React.FC = () => {
       {chatHistory.length === 0 ? (
         <EmptyCanvas greeting={greeting} help={tr("How can I help you today?", "ಇಂದು ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?")} />
       ) : (
-        <MessageList messages={chatHistory as any} busy={isChatBusy} />
+        <MessageList ref={chatListRef} messages={chatHistory as any} busy={isChatBusy} tr={tr} />
       )}
       <div ref={endRef} />
 
@@ -86,9 +115,11 @@ export const Chat: React.FC = () => {
             onSend={() => send()}
             onVoiceResult={(text) => send(text)}
             onNavigateToFir={() => navigate("/fir/new")}
+            onExportPdf={exportChatToPDF}
             busy={isChatBusy}
             tr={tr}
             language={language === "kn" ? "kn" : "en"}
+            hasMessages={chatHistory.length > 0}
           />
 
           <p className="text-[11px] text-muted text-center mt-2">
@@ -115,14 +146,24 @@ const EmptyCanvas: React.FC<{ greeting: string; help: string }> = ({ greeting, h
   </div>
 );
 
-const MessageList: React.FC<{ messages: Msg[]; busy: boolean }> = ({ messages, busy }) => (
-  <div className="flex-1 overflow-y-auto px-6 py-8">
-    <div className="max-w-3xl mx-auto space-y-6">
-      {messages.map((m) => <Bubble key={m.id} msg={m} />)}
-      {busy && <TypingBubble />}
+const MessageList = React.forwardRef<HTMLDivElement, { messages: Msg[]; busy: boolean; tr: (en: string, kn: string) => string }>(
+  ({ messages, busy, tr }, ref) => (
+    <div ref={ref} className="flex-1 overflow-y-auto px-6 py-8 bg-ink">
+      <div className="max-w-3xl mx-auto space-y-6">
+        {/* PDF Document Header (Renders inside exported PDF) */}
+        <div className="hidden print:block pb-4 mb-6 border-b border-line text-white">
+          <h1 className="text-xl font-bold">{tr("Karnataka Police Copilot", "ಕರ್ನಾಟಕ ಪೊಲೀಸ್ ಕೋಪೈಲಟ್")}</h1>
+          <p className="text-xs text-muted">{tr("Official Chat Conversation Transcript", "ಅಧಿಕೃತ ಸಂಭಾಷಣೆ ಪ್ರತಿ")}</p>
+          <p className="text-[10px] text-muted mt-1">{tr("Generated on:", "ರಚಿಸಿದ ದಿನಾಂಕ:")} {new Date().toLocaleString()}</p>
+        </div>
+
+        {messages.map((m) => <Bubble key={m.id} msg={m} />)}
+        {busy && <TypingBubble />}
+      </div>
     </div>
-  </div>
+  )
 );
+MessageList.displayName = "MessageList";
 
 const Bubble: React.FC<{ msg: Msg }> = ({ msg }) => {
   const isUser = msg.role === "user";
@@ -162,10 +203,12 @@ const Composer: React.FC<{
   onSend: () => void;
   onVoiceResult: (text: string) => void;
   onNavigateToFir: () => void;
+  onExportPdf: () => void;
   busy: boolean;
   tr: (en: string, kn: string) => string;
   language: "en" | "kn";
-}> = ({ value, onChange, onSend, onVoiceResult, onNavigateToFir, busy, tr, language }) => {
+  hasMessages: boolean;
+}> = ({ value, onChange, onSend, onVoiceResult, onNavigateToFir, onExportPdf, busy, tr, language, hasMessages }) => {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -180,7 +223,6 @@ const Composer: React.FC<{
     const file = e.target.files?.[0];
     if (file) {
       console.log(`[File System] Selected file for upload: ${file.name}`);
-      // File handle payload hook goes here
     }
   };
 
@@ -209,7 +251,7 @@ const Composer: React.FC<{
         />
         <button 
           onClick={() => fileInputRef.current?.click()} 
-          className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel" 
+          className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel transition" 
           title={tr("Attach a file or picture", "ಫೈಲ್ ಅಥವಾ ಚಿತ್ರವನ್ನು ಲಗತ್ತಿಸಿ")}
         >
           ＋
@@ -220,10 +262,21 @@ const Composer: React.FC<{
         {/* Dynamic New FIR Page Shortcut Redirector */}
         <button 
           onClick={onNavigateToFir} 
-          className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel font-medium text-xs" 
+          className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel font-medium text-xs transition" 
           title={tr("New FIR Wizard", "ಹೊಸ ಎಫ್‌ಐಆರ್")}
         >
           <strong>FIR</strong>
+        </button>
+
+        {/* 🚀 EXPORT PDF BUTTON */}
+        <button
+          type="button"
+          onClick={onExportPdf}
+          disabled={!hasMessages}
+          className="h-8 w-8 grid place-items-center rounded-md text-muted hover:text-white hover:bg-panel font-medium text-xs transition" 
+          title={tr("Export chat history to PDF", "ಸಂಭಾಷಣೆಯನ್ನು PDF ಗೆ ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ")}
+        >
+          <strong>PDF</strong>
         </button>
 
         <div className="flex-1" />
@@ -232,3 +285,5 @@ const Composer: React.FC<{
     </div>
   );
 };
+
+
