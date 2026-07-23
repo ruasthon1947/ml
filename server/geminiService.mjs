@@ -15,6 +15,25 @@ const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Normalizes crime numbers for flexible matching.
+ * E.g., "0011/2026", "CR-0011/2026", and "11/2026" all normalize to "11/2026".
+ */
+export function normalizeCrimeNo(str) {
+  if (!str) return "";
+  const cleaned = String(str)
+    .trim()
+    .toUpperCase()
+    .replace(/^CR-?/i, ""); // Strip leading "CR-" or "CR"
+
+  const parts = cleaned.split("/");
+  if (parts.length === 2) {
+    const seq = parts[0].replace(/^0+/, ""); // Strip leading zeros from sequence
+    return `${seq}/${parts[1]}`;
+  }
+  return cleaned;
+}
+
 async function generateWithFallback(fullPrompt) {
   let lastError = null;
 
@@ -82,12 +101,28 @@ export async function handleChatQuery({ question, role, stationId, language }) {
     ]);
 
     let matchedCaseIds = new Set();
-    const searchTerms = (question || "").toLowerCase().split(/\s+/).filter(t => t.length > 0 && !["give", "details", "complete", "of"].includes(t));
+    const rawQuestion = question || "";
+    const searchTerms = rawQuestion.toLowerCase().split(/\s+/).filter(t => t.length > 0 && !["give", "details", "complete", "of", "and", "accused", "in", "it"].includes(t));
 
-    // 2. Cross-reference parsing: Check if the user is targeting an ID or Name across the tables
-    const targetIdStr = (question || "").match(/\b\d+\b/)?.[0]; 
+    // Normalize any crime numbers found in user prompt (e.g. 0011/2026 -> 11/2026)
+    const crimeNoRegex = /(?:CR-?)?\b\d{1,4}\/\d{4}\b/gi;
+    const extractedCrimeNumbers = (rawQuestion.match(crimeNoRegex) || []).map(normalizeCrimeNo);
 
-    if (targetIdStr) {
+    // 2. Cross-reference parsing: Match against Crime Numbers, IDs, and Names across tables
+    caseMasterRows.forEach(row => {
+      if (!row) return;
+      const caseId = String(row.CaseMasterID || "").trim();
+      const sheetCrimeNorm = normalizeCrimeNo(row.CrimeNo || row.CrimeNumber);
+
+      // Check normalized crime number match
+      if (extractedCrimeNumbers.length > 0 && extractedCrimeNumbers.includes(sheetCrimeNorm)) {
+        if (caseId) matchedCaseIds.add(caseId);
+      }
+    });
+
+    const targetIdStr = rawQuestion.match(/\b\d+\b/)?.[0]; 
+
+    if (targetIdStr && matchedCaseIds.size === 0) {
       const targetNum = targetIdStr.trim();
       
       complainantRows.forEach(c => {
@@ -115,12 +150,17 @@ export async function handleChatQuery({ question, role, stationId, language }) {
       });
     }
 
-    // 3. Filter CaseMaster rows using the found Case IDs
+    // 3. Filter CaseMaster rows using found IDs or normalized Crime Numbers
     let contextualRows = caseMasterRows.filter(row => {
       if (!row) return false;
       const currentCaseId = String(row.CaseMasterID || "").trim();
       if (matchedCaseIds.has(currentCaseId)) return true;
       
+      const sheetCrimeNorm = normalizeCrimeNo(row.CrimeNo || row.CrimeNumber);
+      if (extractedCrimeNumbers.length > 0 && extractedCrimeNumbers.includes(sheetCrimeNorm)) {
+        return true;
+      }
+
       const rowString = Object.values(row).join(" ").toLowerCase();
       return searchTerms.some(term => rowString.includes(term));
     });

@@ -5,6 +5,25 @@ import { handleChatQuery } from "./geminiService.mjs";
 // Force Node.js to resolve IPv4 addresses first to fix ETIMEDOUT / fetch failed errors
 dns.setDefaultResultOrder("ipv4first");
 
+/**
+ * Normalizes crime numbers for flexible matching.
+ * E.g., "0011/2026", "CR-0011/2026", and "11/2026" all normalize to "11/2026".
+ */
+export function normalizeCrimeNo(str) {
+  if (!str) return "";
+  const cleaned = String(str)
+    .trim()
+    .toUpperCase()
+    .replace(/^CR-?/i, ""); // Strip leading "CR-" or "CR"
+
+  const parts = cleaned.split("/");
+  if (parts.length === 2) {
+    const seq = parts[0].replace(/^0+/, ""); // Strip leading zeros from sequence
+    return `${seq}/${parts[1]}`;
+  }
+  return cleaned;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -27,7 +46,22 @@ async function handleChatApi(req, res, next) {
   if (req.method === "POST" && url.pathname === "/api/chat") {
     try {
       const { question, role, stationId, language } = await readBody(req);
-      const answer = await handleChatQuery({ question, role, stationId, language });
+
+      // Extract and normalize any crime numbers (e.g. 0011/2026 or CR-0011/2026) in the user's question
+      const crimeNoRegex = /(?:CR-?)?\b\d{1,4}\/\d{4}\b/gi;
+      const normalizedQuestion = String(question || "").replace(crimeNoRegex, (match) => {
+        return normalizeCrimeNo(match);
+      });
+
+      const answer = await handleChatQuery({ 
+        question, 
+        normalizedQuestion, 
+        normalizedCrimeNo: normalizeCrimeNo(question),
+        role, 
+        stationId, 
+        language 
+      });
+
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: true, answer }));
     } catch (err) {
@@ -76,4 +110,3 @@ function chatPlugin() {
 }
 
 export default chatPlugin;
-

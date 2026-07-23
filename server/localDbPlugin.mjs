@@ -15,6 +15,25 @@ function normalizeValue(value) {
   return String(value).trim();
 }
 
+/**
+ * Normalizes crime numbers for flexible matching.
+ * E.g., "CR-0011/2026", "0011/2026", and "11/2026" all normalize to "11/2026".
+ */
+function normalizeCrimeNo(str) {
+  if (!str) return "";
+  const cleaned = String(str)
+    .trim()
+    .toUpperCase()
+    .replace(/^CR-?/i, ""); // Strip leading "CR-" or "CR"
+
+  const parts = cleaned.split("/");
+  if (parts.length === 2) {
+    const seq = parts[0].replace(/^0+/, ""); // Strip leading zeros from sequence
+    return `${seq}/${parts[1]}`;
+  }
+  return cleaned;
+}
+
 function splitList(value) {
   return String(value || "")
     .split(";")
@@ -65,7 +84,7 @@ function generateCrimeNo(records) {
   for (const record of records) {
     const parts = String(record.CrimeNo || "").split("/");
     if (parts.length === 2 && parts[1] === String(currentYear)) {
-      const seq = parseInt(parts[0], 10);
+      const seq = parseInt(parts[0].replace(/^0+/, ""), 10);
       if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
     }
   }
@@ -95,9 +114,25 @@ function recalcDerivedFields(record) {
 function caseMatches(record, key) {
   const wanted = decodeURIComponent(String(key || "")).trim();
   if (!wanted) return false;
-  return [record.CaseMasterID, record.CaseNo, record.CrimeNo].some(
-    (value) => String(value || "").trim() === wanted,
-  );
+
+  const wantedNormalized = normalizeCrimeNo(wanted);
+
+  // Exact match on CaseMasterID or CaseNo
+  if (
+    String(record.CaseMasterID || "").trim() === wanted ||
+    String(record.CaseNo || "").trim() === wanted
+  ) {
+    return true;
+  }
+
+  // Flexible normalized match on CrimeNo
+  if (record.CrimeNo) {
+    const recordCrimeNormalized = normalizeCrimeNo(record.CrimeNo);
+    if (recordCrimeNormalized === wantedNormalized) return true;
+    if (String(record.CrimeNo).trim() === wanted) return true;
+  }
+
+  return false;
 }
 
 function readBody(req) {
@@ -360,3 +395,4 @@ function localDbPlugin() {
 }
 
 export default localDbPlugin;
+
