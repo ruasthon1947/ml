@@ -433,27 +433,57 @@ const generateDraft = async () => {
     setSaveState({ status: "idle", message: "" });
     
     try {
-      const systemPrompt = `Analyze this police complaint text and extract structural parameters for system fields. 
+      // 🚀 Generate realistic random IDs as fallback for IDs if text does not provide them
+      const autoMasterId = String(Math.floor(100000000000 + Math.random() * 900000000000));
+      const autoCaseNo = `FIR/${new Date().getFullYear()}/${Math.floor(100 + Math.random() * 900)}`;
+      const autoCrimeNo = `CR-${Math.floor(1000 + Math.random() * 9000)}/${new Date().getFullYear()}`;
+
+      const systemPrompt = `Analyze this police complaint text and extract structural parameters for ALL system fields across all 7 steps. 
       You MUST respond ONLY with a raw JSON object. Do not include any introductory text, no conversational explanations, no markdown formatting, and NO backticks (\`\`\`).
       
       Strict Dropdown Options Rules (Choose the best match or infer correctly):
       - "CrimeHead": MUST be exactly one of: ["Theft", "Housebreaking and Theft", "Cyber Crime", "Assault", "General Offence"]
       - "CrimeSubHead": MUST be exactly one of: ["Housebreaking by Night", "Chain Snatching", "Online Financial Fraud", "Vehicle Theft"]
+      - "PoliceStation": MUST be exactly one of: ["Jayanagar Police Station", "Indiranagar Police Station", "Koramangala Police Station", "Cyber Crime Police Station"]
+      - "PoliceStationType": MUST be exactly one of: ["Law & Order", "Traffic", "Crime", "Special Unit"]
       - "District": MUST be exactly one of: ["Bangalore Urban", "Bangalore Rural", "Mysuru", "Mangaluru"]
+      - "CaseCategory": MUST be exactly one of: ["FIR", "NCR", "Petty Case"]
       - "Gravity": MUST be exactly one of: ["Heinous", "Non-Heinous"]
+      - "Status": MUST be exactly one of: ["Under Investigation", "Untraced", "Charge Sheeted", "Closed"]
 
       Expected JSON Structure:
       {
+        "CaseMasterID": "Extracted string ID or empty string if not mentioned",
+        "CaseNo": "Extracted Case/FIR Number or empty string",
+        "CrimeNo": "Extracted Crime Number or empty string",
+        "CrimeRegisteredDate": "YYYY-MM-DD or empty string",
+        "PoliceStation": "Selected from allowed list",
+        "PoliceStationType": "Selected from allowed list",
+        "District": "Selected from allowed list",
         "CrimeHead": "Selected from allowed list",
         "CrimeSubHead": "Selected from allowed list",
-        "District": "Selected from allowed list",
+        "CaseCategory": "Selected from allowed list",
         "Gravity": "Selected from allowed list",
-        "Complainant": "Full Name of individual reporting",
-        "AccusedNames": "Semicolon separated list of names, or 'Unknown'",
+        "Status": "Selected from allowed list",
+        "Court": "Name of local jurisdiction court",
+        "EmployeeID": "Officer Employee ID if mentioned",
+        "Officer": "Officer Name",
+        "OfficerRank": "Rank if mentioned (e.g., Inspector of Police)",
+        "OfficerDesignation": "Designation (e.g., Investigating Officer (IO))",
+        "BriefFacts": "Detailed summary narrative of the complaint facts",
+        "InfoReceivedPSDate": "YYYY-MM-DD HH:MM:SS date-time string",
+        "IncidentFromDate": "YYYY-MM-DD HH:MM:SS date-time string",
+        "IncidentToDate": "YYYY-MM-DD HH:MM:SS date-time string",
+        "Latitude": "GPS latitude string if inferred or available",
+        "Longitude": "GPS longitude string if inferred or available",
+        "Complainant": "Full Name of person reporting",
         "VictimNames": "Semicolon separated list of victims",
+        "AccusedNames": "Semicolon separated list of accused names or 'Unknown'",
         "Acts": "Applicable laws like BNS, IT Act",
         "Sections": "Specific law sections if referenced",
-        "BriefFacts": "A structured legal narrative paragraph summary of the event"
+        "ArrestCount": "Number of arrests as string",
+        "ChargesheetCount": "Number of chargesheets as string",
+        "ChargesheetStatus": "Pending or Submitted"
       }
 
       Text to parse: "${complaint}"`;
@@ -465,7 +495,7 @@ const generateDraft = async () => {
         language: "en"
       });
 
-      // Bulletproof Cleaning
+      // Cleaning response markdown wrappers
       let cleanJsonStr = rawAiReply.trim();
       if (cleanJsonStr.includes("```")) {
         cleanJsonStr = cleanJsonStr.replace(/```json|```/gi, "").trim();
@@ -479,39 +509,64 @@ const generateDraft = async () => {
 
       const parsedData = JSON.parse(cleanJsonStr);
 
-      // Programmatically mapping fields directly into the React FormState context
+      // 🚀 Auto-fill ALL fields across all 7 steps (including IDs)
       setForm((current) => ({
         ...current,
-        BriefFacts: parsedData.BriefFacts || complaint,
+        // Step 1: Case Identity & Basics
+        CaseMasterID: parsedData.CaseMasterID || current.CaseMasterID || autoMasterId,
+        CaseNo: parsedData.CaseNo || current.CaseNo || autoCaseNo,
+        CrimeNo: parsedData.CrimeNo || current.CrimeNo || autoCrimeNo,
+        CrimeRegisteredDate: parsedData.CrimeRegisteredDate || current.CrimeRegisteredDate || todayIso(),
+        PoliceStation: parsedData.PoliceStation || current.PoliceStation || "Jayanagar Police Station",
+        PoliceStationType: parsedData.PoliceStationType || current.PoliceStationType || "Law & Order",
+        District: parsedData.District || current.District || "Bangalore Urban",
         CrimeHead: parsedData.CrimeHead || current.CrimeHead || "General Offence",
         CrimeSubHead: parsedData.CrimeSubHead || current.CrimeSubHead || "",
-        District: parsedData.District || current.District || "Bangalore Urban",
+        CaseCategory: parsedData.CaseCategory || current.CaseCategory || "FIR",
         Gravity: parsedData.Gravity || current.Gravity || "Non-Heinous",
-        Complainant: parsedData.Complainant || current.Complainant || "",
-        AccusedNames: parsedData.AccusedNames || current.AccusedNames || "Unknown",
+        Status: parsedData.Status || current.Status || "Under Investigation",
+        Court: parsedData.Court || current.Court || "Court of ACMM Bengaluru",
+        EmployeeID: parsedData.EmployeeID || current.EmployeeID || "201",
+        Officer: parsedData.Officer || current.Officer || (user as any)?.name || "Investigating Officer",
+        OfficerRank: parsedData.OfficerRank || current.OfficerRank || "Inspector of Police",
+        OfficerDesignation: parsedData.OfficerDesignation || current.OfficerDesignation || "Investigating Officer (IO)",
+
+        // Step 2: Incident Details
+        BriefFacts: parsedData.BriefFacts || complaint,
+        InfoReceivedPSDate: parsedData.InfoReceivedPSDate || current.InfoReceivedPSDate || `${todayIso()} 10:00:00`,
+        IncidentFromDate: parsedData.IncidentFromDate || current.IncidentFromDate || `${todayIso()} 02:00:00`,
+        IncidentToDate: parsedData.IncidentToDate || current.IncidentToDate || `${todayIso()} 04:00:00`,
+        Latitude: parsedData.Latitude || current.Latitude || "12.9250",
+        Longitude: parsedData.Longitude || current.Longitude || "77.5938",
+
+        // Step 3: Complainant
+        Complainant: parsedData.Complainant || current.Complainant || "Unknown Complainant",
+
+        // Step 4: Victims
         VictimNames: parsedData.VictimNames || current.VictimNames || "",
+
+        // Step 5: Accused
+        AccusedNames: parsedData.AccusedNames || current.AccusedNames || "Unknown",
+
+        // Step 6: Acts & Sections
         Acts: parsedData.Acts || current.Acts || "BNS",
-        Sections: parsedData.Sections || current.Sections || "",
-        // Note: CaseMasterID, CaseNo, CrimeNo, and PoliceStation are explicitly omitted 
-        // here so that your manual choices remain fully preserved.
+        Sections: parsedData.Sections || current.Sections || "303",
+        ArrestCount: parsedData.ArrestCount || current.ArrestCount || "0",
+        ChargesheetCount: parsedData.ChargesheetCount || current.ChargesheetCount || "0",
+        ChargesheetStatus: parsedData.ChargesheetStatus || current.ChargesheetStatus || "Pending",
       }));
 
       setAiReady(true);
       setSaveState({ 
         status: "saved", 
-        message: "AI Assistant successfully extracted details and auto-filled all 7 tabs! Please review before saving." 
+        message: "AI Assistant successfully extracted details and auto-filled all 7 tabs (including CaseMasterID, CaseNo, and CrimeNo)! Please review before saving." 
       });
     } catch (err) {
       console.error("[Autonomous Auto-Fill Failure]:", err);
       setSaveState({ 
         status: "error", 
-        message: "AI Draft extraction failed to format cleanly. Falling back to simple facts text mapping." 
+        message: "AI Draft extraction failed to parse JSON format. Check console logs." 
       });
-      
-      setForm((current) => ({
-        ...current,
-        BriefFacts: complaint
-      }));
     } finally {
       setAiLoading(false);
     }

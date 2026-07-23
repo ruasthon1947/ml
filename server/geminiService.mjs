@@ -1,3 +1,6 @@
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+
 import { GoogleGenAI } from "@google/genai";
 import { queryCasesInMemory, readExplicitTabRecords } from "./sheetsStore.mjs";
 import { applyAccessControl } from "./rbac.mjs";
@@ -7,54 +10,64 @@ const API_KEYS = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "
   .map((k) => k.trim())
   .filter(Boolean);
 
-const MODEL_NAME = "gemini-3.5-flash";
+// 🚀 Only valid SDK model names
+const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 
-// Simple helper to introduce a short pause during rate limits
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function generateWithFallback(fullPrompt) {
   let lastError = null;
-  
+
   if (API_KEYS.length === 0) {
     throw new Error("Initialization Failure: No API keys found in GEMINI_API_KEYS or GEMINI_API_KEY env variables.");
   }
 
-  // Iterate over your array of keys sequentially if one errors out
-  for (let i = 0; i < API_KEYS.length; i++) {
-    const key = API_KEYS[i];
-    try {
-      const ai = new GoogleGenAI({ apiKey: key });
-      const response = await ai.models.generateContent({
-        model: MODEL_NAME,
-        contents: fullPrompt,
-        config: { temperature: 0.0 }
-      });
-      return response.text.trim();
-    } catch (err) {
-      const errorMsg = err.message || String(err);
-      // Explicitly check for standard 429 quota codes or message keywords
-      const isRateLimit = err.status === 429 || 
-                          errorMsg.includes("429") || 
-                          errorMsg.includes("quota") || 
-                          errorMsg.includes("RESOURCE_EXHAUSTED");
+  for (const modelName of FALLBACK_MODELS) {
+    for (let i = 0; i < API_KEYS.length; i++) {
+      const key = API_KEYS[i];
 
-      if (isRateLimit) {
-        console.warn(`[Copilot Engine] ⚠️ Key #${i + 1} hit its quota/rate limit. Checking next available key...`);
-        lastError = err;
-        
-        // Wait 1 second before switching keys to let any rapid per-second spikes cool down
-        await sleep(1000); 
-        continue; 
+      try {
+        const ai = new GoogleGenAI({ apiKey: key });
+
+        const response = await ai.models.generateContent(
+          {
+            model: modelName,
+            contents: fullPrompt,
+            config: { temperature: 0.0 }
+          },
+          { timeout: 60000 }
+        );
+
+        return response.text.trim();
+      } catch (err) {
+        const errorMsg = err.message || String(err);
+
+        // 🚀 Catch 404, 429, and 503 so model mismatches or quota limits silently step to the next key/model
+        const isRetriable =
+          err.status === 429 ||
+          err.status === 503 ||
+          err.status === 404 ||
+          errorMsg.includes("429") ||
+          errorMsg.includes("503") ||
+          errorMsg.includes("404") ||
+          errorMsg.includes("quota") ||
+          errorMsg.includes("RESOURCE_EXHAUSTED") ||
+          errorMsg.includes("not found");
+
+        if (isRetriable) {
+          console.warn(`[Copilot Engine] ⚠️ Key #${i + 1} failed on '${modelName}' (${err.status || 'Quota/404'}). Retrying next key/model...`);
+          lastError = err;
+          await sleep(1000);
+          continue;
+        }
+
+        console.error(`[Copilot Engine] Critical API error with key #${i + 1}:`, errorMsg);
+        throw err;
       }
-
-      // If it's a structural syntax error or authorization issue, don't bother rotating, throw immediately
-      console.error(`[Copilot Engine] Critical API error with key #${i + 1}:`, errorMsg);
-      throw err;
     }
   }
-  
-  // If the loop completes and all keys threw an error, raise the last encountered error state
-  throw new Error(`All provided API keys (${API_KEYS.length}) failed or exceeded their active daily tier limits. Last error: ${lastError?.message}`);
+
+  throw new Error(`All API keys and models failed. Last error: ${lastError?.message}`);
 }
 
 export async function handleChatQuery({ question, role, stationId, language }) {
@@ -224,5 +237,3 @@ User Query: "${question}"
     return "Error: Backend generation cycle interrupted due to rate constraints or database network issues. Please try again.";
   }
 }
-
-

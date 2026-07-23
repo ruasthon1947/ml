@@ -1,5 +1,9 @@
 import "dotenv/config";
+import dns from "node:dns";
 import { handleChatQuery } from "./geminiService.mjs";
+
+// 🚀 Force Node.js to resolve IPv4 addresses first to fix ETIMEDOUT / fetch failed errors
+dns.setDefaultResultOrder("ipv4first");
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -26,6 +30,7 @@ async function handleChatApi(req, res, next) {
     } catch (err) {
       console.error(err);
       res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: false, error: err.message }));
     }
     return;
@@ -67,3 +72,8 @@ function chatPlugin() {
 }
 
 export default chatPlugin;
+
+
+
+
+

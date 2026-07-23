@@ -1,3 +1,6 @@
+import dns from 'node:dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import chatPlugin from './server/chatPlugin.mjs';
@@ -10,14 +13,13 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Bypasses the network proxy for your local endpoints by returning bypass true
       '/api': {
         target: 'http://localhost:5173',
         changeOrigin: true,
         bypass: (req) => {
           const url = req.url || '';
           if (url.startsWith('/api/chat') || url.startsWith('/api/login')) {
-            return url; // Tell Vite's proxy connection pool to back off and drop into the plugin pipeline
+            return url;
           }
         }
       }
