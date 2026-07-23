@@ -7,9 +7,8 @@ import "dotenv/config";
 // cannot authenticate to Google; set CATALYST_SERVICE_ACCOUNT_JSON to the JSON
 // key (or a path to it) for catalyst-sync@karnatakastatepolice.iam.gserviceaccount.com.
 const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
-const MASTER_SHEET_ID = process.env.GOOGLE_MASTER_SHEET_ID || "1sExCOOVJDT6J68DM93E_QPbZGs_-RzPOlfXACYd8mS4";
+const MASTER_SHEET_ID = process.env.GOOGLE_MASTER_SHEET_ID || process.env.GOOGLE_SHEET_ID || "1sExCOOVJDT6J68DM93E_QPbZGs_-RzPOlfXACYd8mS4";
 const CONSOLIDATED_SHEET_ID = process.env.GOOGLE_CONSOLIDATED_SHEET_ID || "1uyzVgCAPZW9CkzkNHFKH0QOJm_nbn5Sr4ul9ngv0ZoM";
-
 
 const b64url = (value) => Buffer.from(value).toString("base64url");
 const quoteRange = (tab, range = "A:ZZ") => encodeURIComponent(`'${tab.replace(/'/g, "''")}'!${range}`);
@@ -36,6 +35,16 @@ function resolveCredentialSource(configured) {
 function credential() {
   let configured = process.env.CATALYST_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   
+  if (!configured) {
+    for (const fallback of ["service-account.json", "config/service-account.json", "local_db/service_account.json"]) {
+      const resolved = path.resolve(fallback);
+      if (fs.existsSync(resolved)) {
+        configured = resolved;
+        break;
+      }
+    }
+  }
+
   if (!configured) {
     throw new Error("Google Sheets is not configured. Please add the service-account JSON key directly as GOOGLE_SERVICE_ACCOUNT_JSON to your .env file.");
   }
@@ -397,7 +406,13 @@ export async function upsertCaseInGoogle(record) {
 
 export async function employeeById(employeeId) {
   const table = await readTable(MASTER_SHEET_ID, "Employee");
-  const row = table.rows.find((item) => String(item.EmployeeID || "").trim().toLowerCase() === employeeId.trim().toLowerCase());
+  const target = String(employeeId || "").trim().toLowerCase();
+  const rawId = target.replace(/^(emp|ksp|kgid)[-_\s]*/i, "");
+  const row = table.rows.find((item) => {
+    const id = String(item.EmployeeID || "").trim().toLowerCase();
+    const kgid = String(item.KGID || "").trim().toLowerCase();
+    return id === target || (rawId && id === rawId) || kgid === target || (rawId && kgid.toLowerCase().endsWith(rawId));
+  });
   return { table, row };
 }
 export async function updateEmployee(employeeId, changes) {

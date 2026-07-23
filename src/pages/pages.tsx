@@ -1797,11 +1797,15 @@ export const Reports: React.FC = () => {
 
 const ChartCard: React.FC<{
   title: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
-}> = ({ title, children }) => (
+}> = ({ title, action, children }) => (
   <Card className="p-4">
-    <div className="text-sm font-semibold">
-      {title}
+    <div className="flex items-center justify-between">
+      <div className="text-sm font-semibold">
+        {title}
+      </div>
+      {action}
     </div>
 
     <div className="h-[260px] mt-4">

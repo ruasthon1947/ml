@@ -2,7 +2,7 @@ import "dotenv/config";
 import dns from "node:dns";
 import { handleChatQuery } from "./geminiService.mjs";
 
-// 🚀 Force Node.js to resolve IPv4 addresses first to fix ETIMEDOUT / fetch failed errors
+// Force Node.js to resolve IPv4 addresses first to fix ETIMEDOUT / fetch failed errors
 dns.setDefaultResultOrder("ipv4first");
 
 function readBody(req) {
@@ -10,8 +10,11 @@ function readBody(req) {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      try { resolve(body ? JSON.parse(body) : {}); }
-      catch { reject(new Error("Invalid JSON body")); }
+      try { 
+        resolve(body ? JSON.parse(body) : {}); 
+      } catch { 
+        reject(new Error("Invalid JSON body")); 
+      }
     });
     req.on("error", reject);
   });
@@ -20,7 +23,7 @@ function readBody(req) {
 async function handleChatApi(req, res, next) {
   const url = new URL(req.url || "/", "http://local-chat");
 
-  // 1. Existing Chat Endpoint Route Handler
+  // 1. Chat Endpoint Route Handler
   if (req.method === "POST" && url.pathname === "/api/chat") {
     try {
       const { question, role, stationId, language } = await readBody(req);
@@ -36,7 +39,7 @@ async function handleChatApi(req, res, next) {
     return;
   }
 
-  // 2. Added Login Endpoint Route Handler to prevent authentication hangs
+  // 2. Login Endpoint Route Handler
   if (req.method === "POST" && url.pathname === "/api/login") {
     try {
       const { employeeId, firebaseAuth } = await readBody(req);
@@ -45,7 +48,7 @@ async function handleChatApi(req, res, next) {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ 
         ok: true, 
-        name: `Officer ${employeeId.split("-").pop() || employeeId}`, 
+        name: `Officer ${employeeId?.split("-").pop() || employeeId}`, 
         isFirstLogin: !firebaseAuth 
       }));
     } catch (err) {
@@ -56,6 +59,7 @@ async function handleChatApi(req, res, next) {
     }
     return;
   }
+
   next();
 }
 
@@ -72,8 +76,4 @@ function chatPlugin() {
 }
 
 export default chatPlugin;
-
-
-
-
 

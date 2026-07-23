@@ -1,14 +1,13 @@
-import dns from 'node:dns';
-dns.setDefaultResultOrder('ipv4first');
-
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import localDbPlugin from './server/localDbPlugin.mjs';
 import chatPlugin from './server/chatPlugin.mjs';
 
 export default defineConfig({
   plugins: [
     react(),
-    chatPlugin() // Intercepts /api/chat and /api/login directly in memory
+    localDbPlugin(),
+    chatPlugin()
   ],
   server: {
     port: 5173,
@@ -18,11 +17,12 @@ export default defineConfig({
         changeOrigin: true,
         bypass: (req) => {
           const url = req.url || '';
-          if (url.startsWith('/api/chat') || url.startsWith('/api/login')) {
-            return url;
+          if (url.startsWith('/api')) {
+            return url; // Bypass proxy for all /api endpoints to let Vite server plugins handle them in memory
           }
         }
       }
     }
   }
 });
+

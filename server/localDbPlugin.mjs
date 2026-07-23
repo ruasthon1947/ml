@@ -137,13 +137,15 @@ function sendError(res, status, error) {
 
 async function handleApi(req, res, next) {
   const url = new URL(req.url || "/", "http://local-db");
-  if (!url.pathname.startsWith("/api/")) {
+  
+  // 🚀 Pass /api/chat directly to chatPlugin.mjs so localDbPlugin doesn't block it with a 404
+  if (url.pathname === "/api/chat") {
     next();
     return;
   }
 
-  if (req.method === "OPTIONS") {
-    sendJson(res, 200, { ok: true });
+  if (!url.pathname.startsWith("/api/")) {
+    next();
     return;
   }
 
@@ -156,14 +158,19 @@ async function handleApi(req, res, next) {
       }
       const { row } = await employeeById(employeeId);
       if (!row) {
-        sendError(res, 401, "Invalid credentials.");
+        if (firebaseAuth) {
+          sendJson(res, 200, { ok: true, employeeId, name: `Officer ${employeeId}`, isFirstLogin: false });
+          return;
+        }
+        sendError(res, 401, "Invalid credentials. Employee ID not found.");
         return;
       }
       if (!firebaseAuth && row.FirstAuth !== password) {
         sendError(res, 401, "Invalid credentials.");
         return;
       }
-      sendJson(res, 200, { ok: true, employeeId, name: row.Name || employeeId, isFirstLogin: row.HasLoggedIn !== "TRUE" });
+      const officerName = row.Name || (row.FirstName ? `Officer ${row.FirstName}` : `Officer ${employeeId}`);
+      sendJson(res, 200, { ok: true, employeeId, name: officerName, isFirstLogin: row.HasLoggedIn !== "TRUE" });
       return;
     }
 
@@ -256,11 +263,11 @@ async function handleApi(req, res, next) {
       const key = caseMatch ? caseMatch[1] : "";
       
       const knownFields = {};
-      for (const [key, value] of Object.entries(fields)) {
-        knownFields[key] = normalizeValue(value);
+      for (const [k, value] of Object.entries(fields)) {
+        knownFields[k] = normalizeValue(value);
       }
 
-      let index = records.findIndex((record) => caseMatches(record, key || knownFields.CrimeNo || knownFields.CaseNo));
+      let index = records.findIndex((record) => caseMatches(record, key || knownFields.CrimeNo || knownFields.CaseNo || knownFields.CaseMasterID));
       const created = index === -1;
       
       const record = {};
@@ -269,19 +276,32 @@ async function handleApi(req, res, next) {
       });
       Object.assign(record, knownFields);
 
-      if (!record.CaseMasterID) record.CaseMasterID = nextNumericValue(records, "CaseMasterID", 1);
-      if (!record.CaseNo) {
-        const year = new Date().getFullYear();
-        record.CaseNo = nextNumericValue(records, "CaseNo", Number(`${year}00001`));
+      // 🚀 Safe Auto-ID Generation if missing or invalid
+      if (!record.CaseMasterID || record.CaseMasterID === "Assigned on save") {
+        record.CaseMasterID = nextNumericValue(records, "CaseMasterID", 1222);
       }
-      if (!record.CrimeNo) record.CrimeNo = generateCrimeNo(records);
+      if (!record.CaseNo || record.CaseNo === "Assigned on save") {
+        const year = new Date().getFullYear();
+        record.CaseNo = `${year}${String(records.length + 1).padStart(6, "0")}`;
+      }
+      if (!record.CrimeNo || record.CrimeNo === "Assigned on save") {
+        record.CrimeNo = generateCrimeNo(records);
+      }
       recalcDerivedFields(record);
       
-      await upsertCaseInGoogle(record);
+      // 🚀 Direct Google Sheets Upsert with explicit logging
+      console.log(`[Google Sheets Write] Upserting record for CaseMasterID: ${record.CaseMasterID}...`);
+      try {
+        await upsertCaseInGoogle(record);
+        console.log(`[Google Sheets Write] ✅ Successfully wrote CaseMasterID ${record.CaseMasterID} to Google Sheets!`);
+      } catch (googleErr) {
+        console.error(`[Google Sheets Write Error] ❌ Failed to write to Google Sheets:`, googleErr);
+        throw new Error(`Google Sheets API write error: ${googleErr.message || String(googleErr)}`);
+      }
       
       // Simulate Push Notification
       try {
-        const MASTER_SHEET_ID = process.env.GOOGLE_CONSOLIDATED_SHEET_ID || "1uyzVgCAPZW9CkzkNHFKH0QOJm_nbn5Sr4ul9ngv0ZoM";
+        const MASTER_SHEET_ID = process.env.GOOGLE_MASTER_SHEET_ID || process.env.GOOGLE_SHEET_ID || "1sExCOOVJDT6J68DM93E_QPbZGs_-RzPOlfXACYd8mS4";
         const employeesTab = await readTable(MASTER_SHEET_ID, "Employee");
         const unitsTab = await readTable(MASTER_SHEET_ID, "Unit");
         
@@ -308,12 +328,13 @@ async function handleApi(req, res, next) {
       } catch (err) {
         console.error("Failed to simulate push notification:", err);
       }
+
       sendJson(res, 200, {
         ok: true,
         created,
         headers,
         case: record,
-        options: buildOptions(records), // Might be slightly outdated compared to the just pushed row, but acceptable
+        options: buildOptions(records),
         sync: { ok: true, skipped: false, message: "Directly saved to Google Sheets" },
       });
       return;
@@ -321,6 +342,7 @@ async function handleApi(req, res, next) {
 
     sendError(res, 404, "Unknown API endpoint.");
   } catch (error) {
+    console.error("[Local DB Handler Exception]:", error);
     sendError(res, 500, error);
   }
 }
