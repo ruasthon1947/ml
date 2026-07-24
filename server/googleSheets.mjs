@@ -419,14 +419,22 @@ export async function updateEmployee(employeeId, changes) {
   const { table, row } = await employeeById(employeeId);
   if (!row) throw new Error("Employee was not found in the Employee sheet.");
   const index = table.rows.indexOf(row);
-  table.rows[index] = { ...row, ...changes };
-  
+
+  // Add any new columns to headers
   for (const key of Object.keys(changes)) {
     if (!table.headers.includes(key)) {
       table.headers.push(key);
     }
   }
 
-  await writeTable(MASTER_SHEET_ID, "Employee", table.headers, table.rows);
-  return table.rows[index];
-}
+  // Merge changes into the row
+  const updatedRow = { ...row, ...changes };
+  table.rows[index] = updatedRow;
+
+  // Write only the single changed row (row index + 2: +1 for header row, +1 for 1-based sheets index)
+  const sheetRowIndex = index + 2;
+  const rowArray = table.headers.map(h => String(updatedRow[h] ?? ""));
+  await updateRow(MASTER_SHEET_ID, "Employee", sheetRowIndex, rowArray);
+
+  return updatedRow;
+}

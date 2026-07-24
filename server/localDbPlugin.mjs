@@ -1,4 +1,5 @@
 import { casesFromGoogle, upsertCaseInGoogle, employeeById, updateEmployee, writeTable, readTable } from "./googleSheets.mjs";
+import { sendAlertSms } from "./smsPlugin.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -179,6 +180,12 @@ async function handleApi(req, res, next) {
     return;
   }
 
+  // 🚀 Pass /api/sms/* to smsPlugin.mjs
+  if (url.pathname.startsWith("/api/sms/")) {
+    next();
+    return;
+  }
+
   if (!url.pathname.startsWith("/api/")) {
     next();
     return;
@@ -334,34 +341,62 @@ async function handleApi(req, res, next) {
         throw new Error(`Google Sheets API write error: ${googleErr.message || String(googleErr)}`);
       }
       
-      // Simulate Push Notification
+      // 🚀 Send real SMS alerts to verified officers AT THIS SPECIFIC STATION
       try {
         const MASTER_SHEET_ID = process.env.GOOGLE_MASTER_SHEET_ID || process.env.GOOGLE_SHEET_ID || "1sExCOOVJDT6J68DM93E_QPbZGs_-RzPOlfXACYd8mS4";
         const employeesTab = await readTable(MASTER_SHEET_ID, "Employee");
         const unitsTab = await readTable(MASTER_SHEET_ID, "Unit");
-        
+
         const station = record.PoliceStation || record.Station;
+        let phones = [];
+
         if (station) {
-          let targetUnitId = String(station);
           const unitMatch = unitsTab.rows.find(u => u.UnitName && u.UnitName.trim().toLowerCase() === station.trim().toLowerCase());
           if (unitMatch) {
-            targetUnitId = String(unitMatch.UnitID);
-          }
+            const targetUnitId = String(unitMatch.UnitID);
+            
+            // Filter employees by this UnitID AND having a valid phone number
+            const matchingEmployees = employeesTab.rows.filter(e => 
+              String(e.UnitID) === targetUnitId && e.PhoneNumber && e.PhoneNumber.trim().length >= 10
+            );
 
-          const matchingEmployees = employeesTab.rows.filter(e => 
-            String(e.UnitID) === targetUnitId && e.PhoneNumber && e.PhoneNumber.trim() !== ""
-          );
-          if (matchingEmployees.length > 0) {
-            console.log(`\n[PUSH NOTIFICATION TRIGGER]`);
-            console.log(`Case Update: ${record.CrimeNo || record.CaseNo} at ${station}`);
-            matchingEmployees.forEach(emp => {
-              console.log(` -> Sending SMS/Push to Officer ${emp.Name} at ${emp.PhoneNumber}`);
-            });
-            console.log(`---------------------------\n`);
+            // Deduplicate phone numbers using a Set
+            phones = [...new Set(matchingEmployees.map(e => e.PhoneNumber.trim()))];
           }
         }
+
+        if (phones.length > 0) {
+          const action = created ? "Registered" : "Updated";
+          const crimeNo = record.CrimeNo || record.CaseNo || record.CaseMasterID;
+          
+          // Prevent duplicate SMS sends (frontend is firing 4 requests per save)
+          global.recentSmsSends = global.recentSmsSends || new Set();
+          const smsKey = `${crimeNo}-${action}`;
+          
+          if (!global.recentSmsSends.has(smsKey)) {
+            global.recentSmsSends.add(smsKey);
+            setTimeout(() => global.recentSmsSends.delete(smsKey), 10000); // clear after 10s
+
+            const io = record.IOName || record.InvestigatingOfficer || "";
+            const message = [
+              `FIR ${action}: ${crimeNo}`,
+              station ? `Station: ${station}` : null,
+              io ? `IO: ${io}` : null,
+              record.OffenceType ? `Offence: ${record.OffenceType}` : null,
+              `Status: ${record.Status || "Under Investigation"}`,
+              `- Karnataka Police FIR System`
+            ].filter(Boolean).join("\n");
+
+            console.log(`[SMS] Sending FIR alert to ${phones.length} verified number(s) at station '${station}':`, phones);
+            await sendAlertSms(phones, message);
+          } else {
+            console.log(`[SMS] Skipped duplicate alert for ${smsKey}`);
+          }
+        } else {
+          console.log(`[SMS] No verified phone numbers found for station: '${station}'. (Make sure an employee at this station has a phone number)`);
+        }
       } catch (err) {
-        console.error("Failed to simulate push notification:", err);
+        console.error("Failed to send SMS notification:", err);
       }
 
       sendJson(res, 200, {

@@ -2080,37 +2080,74 @@ export const Settings: React.FC = () => {
     setPhoneError("");
     setPhoneSuccess("");
     setPhoneLoading(true);
-    
-    // Mock sending OTP
-    setTimeout(() => {
-      setOtpSent(true);
-      setPhoneSuccess(t("OTP sent successfully. (Use 1968)", "OTP ಯಶಸ್ವಿಯಾಗಿ ಕಳುಹಿಸಲಾಗಿದೆ. (Use 1968)"));
+
+    try {
+      const res = await fetch("/api/sms/send-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phoneNumber }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setOtpSent(true);
+        if (data.dev_otp) {
+          // Dev fallback: Twilio unavailable, OTP returned in response
+          setPhoneSuccess(`OTP sent (dev mode — use: ${data.dev_otp})`);
+        } else {
+          setPhoneSuccess(t("OTP sent successfully. Check your SMS.", "OTP ಯಶಸ್ವಿಯಾಗಿ ಕಳುಹಿಸಲಾಗಿದೆ."));
+        }
+      } else {
+        setPhoneError(data.error || "Failed to send OTP. Please try again.");
+      }
+    } catch (err) {
+      setPhoneError("Network error. Please try again.");
+    } finally {
       setPhoneLoading(false);
-    }, 500);
+    }
   };
 
   const verifyOtp = async () => {
     setPhoneError("");
     setPhoneSuccess("");
     setPhoneLoading(true);
-    
-    setTimeout(() => {
-      if (otp === "1968") {
+
+    try {
+      const res = await fetch("/api/sms/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phoneNumber, otp }),
+      });
+      const data = await res.json();
+      if (data.ok && data.verified) {
         setOtpSent(false);
         setPhoneSuccess(t("Phone number verified!", "ಫೋನ್ ಸಂಖ್ಯೆಯನ್ನು ದೃಢೀಕರಿಸಲಾಗಿದೆ!"));
         localStorage.setItem("kpfir.phoneNumber", "+91" + phoneNumber);
-        
-        // Save to backend
-        fetch("/api/employee/password", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ employeeId: user?.employeeId, phoneNumber: "+91" + phoneNumber })
-        }).catch(console.error);
+
+        // Save verified phone to backend (Employee sheet)
+        try {
+          const saveRes = await fetch("/api/employee/password", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ employeeId: user?.employeeId, phoneNumber: "+91" + phoneNumber })
+          });
+          const saveData = await saveRes.json();
+          if (!saveData.ok) {
+            console.error("Failed to save phone to backend:", saveData);
+            setPhoneError("Phone verified but failed to save to server. Please try again.");
+          }
+        } catch (saveErr) {
+          console.error("Network error saving phone:", saveErr);
+          setPhoneError("Phone verified but could not reach server to save.");
+        }
+
       } else {
-        setPhoneError("Invalid OTP. Try again. (Use 1968)");
+        setPhoneError(data.error || "Invalid OTP. Please try again.");
       }
+    } catch (err) {
+      setPhoneError("Network error. Please try again.");
+    } finally {
       setPhoneLoading(false);
-    }, 500);
+    }
   };
 
   const requestNotificationPermission = async () => {

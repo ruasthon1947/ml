@@ -2,27 +2,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import localDbPlugin from './server/localDbPlugin.mjs';
 import chatPlugin from './server/chatPlugin.mjs';
+import smsPlugin from './server/smsPlugin.mjs';
 
 export default defineConfig({
-  plugins: [
-    react(),
-    localDbPlugin(),
-    chatPlugin()
-  ],
+  plugins: [react(), localDbPlugin(), chatPlugin(), smsPlugin()],
   server: {
+    host: true,
     port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:5173',
-        changeOrigin: true,
-        bypass: (req) => {
-          const url = req.url || '';
-          if (url.startsWith('/api')) {
-            return url; // Bypass proxy for all /api endpoints to let Vite server plugins handle them in memory
-          }
-        }
-      }
-    }
-  }
+    watch: {
+      ignored: ['**/local_db/**'],
+    },
+  },
 });
-
