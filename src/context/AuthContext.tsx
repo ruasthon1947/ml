@@ -151,11 +151,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const logout = () => {
+    // Clear employee-specific phone number and verification flag if it exists
+    if (user?.employeeId) {
+      localStorage.removeItem(`kpfir.phoneNumber.${user.employeeId}`);
+      localStorage.removeItem(`kpfir.phoneVerified.${user.employeeId}`);
+    }
+    
     setUser(null);
     setChatHistory([]); // Wipes active conversation securely from internal state memory upon logouts
     setIsChatBusy(false); // Resets the active loader flag layout safely
     localStorage.removeItem(LS_USER);
-    localStorage.removeItem("kpfir.phoneNumber");
+    localStorage.removeItem("kpfir.phoneNumber"); // Remove old global key for backward compatibility
     setSessionExpiresAt(null);
   };
 

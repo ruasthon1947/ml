@@ -170,7 +170,7 @@ const Bubble: React.FC<{ msg: Msg }> = ({ msg }) => {
   return (
     <div className={`flex items-start gap-3 ${isUser ? "justify-end" : ""}`}>
       {!isUser && <div className="h-8 w-8 rounded-full bg-brand grid place-items-center text-white text-xs font-semibold shrink-0">AI</div>}
-      <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${isUser ? "bg-brand text-white" : "bg-shell text-white border border-line"}`}>
+      <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${isUser ? "bg-brand text-white" : "bg-shell text-white border border-line"}`}>
         <Formatted text={msg.content} />
       </div>
       {isUser && <div className="h-8 w-8 rounded-full bg-panel border border-line grid place-items-center text-xs text-muted shrink-0">U</div>}

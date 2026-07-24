@@ -2058,7 +2058,10 @@ export const Settings: React.FC = () => {
   }>({ status: "idle", message: "" });
 
   const [phoneNumber, setPhoneNumber] = useState(
-    () => localStorage.getItem("kpfir.phoneNumber")?.replace("+91", "") || ""
+    () => localStorage.getItem(`kpfir.phoneNumber.${user?.employeeId}`)?.replace("+91", "") || ""
+  );
+  const [phoneVerified, setPhoneVerified] = useState(
+    () => localStorage.getItem(`kpfir.phoneVerified.${user?.employeeId}`) === "true"
   );
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
@@ -2098,13 +2101,16 @@ export const Settings: React.FC = () => {
       if (otp === "1968") {
         setOtpSent(false);
         setPhoneSuccess(t("Phone number verified!", "ಫೋನ್ ಸಂಖ್ಯೆಯನ್ನು ದೃಢೀಕರಿಸಲಾಗಿದೆ!"));
-        localStorage.setItem("kpfir.phoneNumber", "+91" + phoneNumber);
+        const verifiedNumber = "+91" + phoneNumber;
+        localStorage.setItem(`kpfir.phoneNumber.${user?.employeeId}`, verifiedNumber);
+        localStorage.setItem(`kpfir.phoneVerified.${user?.employeeId}`, "true");
+        setPhoneVerified(true);
         
-        // Save to backend
-        fetch("/api/employee/password", {
+        // Save to backend - only to Consolidated sheet, not Employee sheet
+        fetch("/api/phone", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ employeeId: user?.employeeId, phoneNumber: "+91" + phoneNumber })
+          body: JSON.stringify({ employeeId: user?.employeeId, phoneNumber: verifiedNumber })
         }).catch(console.error);
       } else {
         setPhoneError("Invalid OTP. Try again. (Use 1968)");
@@ -2220,8 +2226,8 @@ export const Settings: React.FC = () => {
 
           <p className="text-xs text-muted mt-1">
             {t(
-              "Choose the case alerts that matter to you.",
-              "ನಿಮಗೆ ಮುಖ್ಯವಾದ ಪ್ರಕರಣ ಎಚ್ಚರಿಕೆಗಳನ್ನು ಆಯ್ಕೆಮಾಡಿ."
+              "Update your phone number and notification preferences.",
+              "ನಿಮ್ಮ ಫೋನ್ ಸಂಖ್ಯೆ ಮತ್ತು ಸೂಚನೆ ಆದ್ಯತೆಗಳನ್ನು ನವೀಕರಿಸಿ."
             )}
           </p>
 
@@ -2233,14 +2239,17 @@ export const Settings: React.FC = () => {
               desc={t("Used for SMS alerts and verification.", "SMS ಎಚ್ಚರಿಕೆಗಳು ಮತ್ತು ದೃಢೀಕರಣಕ್ಕಾಗಿ ಬಳಸಲಾಗುತ್ತದೆ.")}
               control={
                 <div className="flex flex-col gap-2 min-w-[240px]">
-                  {Boolean(localStorage.getItem("kpfir.phoneNumber")) || phoneSuccess === t("Phone number verified!", "ಫೋನ್ ಸಂಖ್ಯೆಯನ್ನು ದೃಢೀಕರಿಸಲಾಗಿದೆ!") ? (
+                  {phoneVerified ? (
                     <div className="flex items-center gap-2 text-sage text-sm font-medium">
                       ✓ +91 {phoneNumber} {t("Verified", "ದೃಢೀಕರಿಸಲಾಗಿದೆ")}
                       <button 
                         onClick={() => {
-                          localStorage.removeItem("kpfir.phoneNumber");
+                          localStorage.removeItem(`kpfir.phoneNumber.${user?.employeeId}`);
+                          localStorage.removeItem(`kpfir.phoneVerified.${user?.employeeId}`);
+                          localStorage.removeItem("kpfir.phoneNumber"); // Old global key
                           setPhoneNumber("");
                           setPhoneSuccess("");
+                          setPhoneVerified(false);
                         }} 
                         className="text-muted text-xs ml-4 hover:text-white underline"
                       >

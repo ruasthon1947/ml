@@ -3,17 +3,38 @@ dns.setDefaultResultOrder("ipv4first");
 
 import { GoogleGenAI } from "@google/genai";
 import { queryCasesInMemory, readExplicitTabRecords } from "./sheetsStore.mjs";
+import { casesFromGoogle } from "./googleSheets.mjs";
 import { applyAccessControl } from "./rbac.mjs";
 
-const API_KEYS = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
+const GEMINI_KEYS = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
   .split(",")
   .map((k) => k.trim())
   .filter(Boolean);
 
-// 🚀 Only valid SDK model names
-const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
+const GROQ_KEYS = (process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || "")
+  .split(",")
+  .map((k) => k.trim())
+  .filter(Boolean);
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const FALLBACK_GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash"];
+const FALLBACK_GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+
+const STOP_WORDS = new Set([
+  "give", "details", "complete", "about", "this", "case", "cases", "bearing",
+  "number", "with", "total", "recorded", "today", "show", "what", "are",
+  "have", "from", "that", "which", "will", "would", "could", "should",
+  "output", "kannada", "english", "please", "tell", "need", "only", "also",
+  "list", "all", "the", "for", "any", "in", "at", "of", "is", "and", "or"
+]);
+
+function normalizeLocationOrTerm(term) {
+  const t = String(term || "").toLowerCase().trim();
+  if (t === "whitefiled" || t === "whitefield") return "whitefield";
+  if (t === "koramangla" || t === "koramangala") return "koramangala";
+  if (t === "indranagar" || t === "indiranagar") return "indiranagar";
+  if (t === "basavangudi" || t === "basavanagudi") return "basavanagudi";
+  return t;
+}
 
 /**
  * Normalizes crime numbers for flexible matching.
@@ -34,166 +55,295 @@ export function normalizeCrimeNo(str) {
   return cleaned;
 }
 
+async function generateWithGroq(prompt, apiKey) {
+  for (const model of FALLBACK_GROQ_MODELS) {
+    try {
+      console.log(`[Copilot Engine] Calling Groq model '${model}'...`);
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.0,
+          max_tokens: 350
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.choices?.[0]?.message?.content;
+        if (text) return text.trim();
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        console.warn(`[Copilot Engine] Groq model '${model}' HTTP ${res.status}:`, errJson?.error?.message || res.statusText);
+      }
+    } catch (e) {
+      console.warn(`[Copilot Engine] Groq model '${model}' error:`, e.message);
+    }
+  }
+  throw new Error("All Groq models failed.");
+}
+
 async function generateWithFallback(fullPrompt) {
   let lastError = null;
 
-  if (API_KEYS.length === 0) {
-    throw new Error("Initialization Failure: No API keys found in GEMINI_API_KEYS or GEMINI_API_KEY env variables.");
-  }
-
-  for (const modelName of FALLBACK_MODELS) {
-    for (let i = 0; i < API_KEYS.length; i++) {
-      const key = API_KEYS[i];
-
+  // 1. Try Gemini API keys
+  for (const modelName of FALLBACK_GEMINI_MODELS) {
+    for (let i = 0; i < GEMINI_KEYS.length; i++) {
+      const key = GEMINI_KEYS[i];
       try {
         const ai = new GoogleGenAI({ apiKey: key });
-
         const response = await ai.models.generateContent(
           {
             model: modelName,
             contents: fullPrompt,
-            config: { temperature: 0.0 }
+            config: { temperature: 0.0, maxOutputTokens: 350 }
           },
-          { timeout: 60000 }
+          { timeout: 15000 }
         );
-
         return response.text.trim();
       } catch (err) {
         const errorMsg = err.message || String(err);
-
-        // 🚀 Catch 404, 429, and 503 so model mismatches or quota limits silently step to the next key/model
-        const isRetriable =
-          err.status === 429 ||
-          err.status === 503 ||
-          err.status === 404 ||
-          errorMsg.includes("429") ||
-          errorMsg.includes("503") ||
-          errorMsg.includes("404") ||
-          errorMsg.includes("quota") ||
-          errorMsg.includes("RESOURCE_EXHAUSTED") ||
-          errorMsg.includes("not found");
-
-        if (isRetriable) {
-          console.warn(`[Copilot Engine] ⚠️ Key #${i + 1} failed on '${modelName}' (${err.status || 'Quota/404'}). Retrying next key/model...`);
-          lastError = err;
-          await sleep(1000);
-          continue;
-        }
-
-        console.error(`[Copilot Engine] Critical API error with key #${i + 1}:`, errorMsg);
-        throw err;
+        console.warn(`[Copilot Engine] ⚠️ Gemini Key #${i + 1} failed on '${modelName}' (${err.status || 'Quota/404'}). Retrying...`);
+        lastError = err;
       }
     }
   }
 
-  throw new Error(`All API keys and models failed. Last error: ${lastError?.message}`);
+  // 2. Try Groq API keys as fallback engine
+  for (let i = 0; i < GROQ_KEYS.length; i++) {
+    const key = GROQ_KEYS[i];
+    try {
+      console.log(`[Copilot Engine] 🚀 Executing request via Groq Engine Key #${i + 1}...`);
+      return await generateWithGroq(fullPrompt, key);
+    } catch (err) {
+      console.warn(`[Copilot Engine] ⚠️ Groq Key #${i + 1} failed:`, err.message);
+      lastError = err;
+    }
+  }
+
+  throw new Error(`All AI provider keys and models failed. Last error: ${lastError?.message}`);
+}
+
+export function parseCaseDate(dateStr) {
+  if (!dateStr) return null;
+  const str = String(dateStr).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    return str.substring(0, 10);
+  }
+  const parts = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (parts) {
+    const day = parts[1].padStart(2, "0");
+    const month = parts[2].padStart(2, "0");
+    const year = parts[3];
+    return `${year}-${month}-${day}`;
+  }
+  return str.substring(0, 10);
+}
+
+export function findMatchingCases(question, allCases) {
+  if (!question || !allCases || allCases.length === 0) return [];
+  const qLower = String(question).toLowerCase().trim();
+  const qClean = qLower.replace(/[^\w\/\-\s]/g, " ");
+
+  const matched = new Set();
+
+  // 1. Direct CaseNo, CaseMasterID, CrimeNo exact matching
+  for (const c of allCases) {
+    if (!c) continue;
+    const caseNo = String(c.CaseNo || "").toLowerCase().trim();
+    const crimeNo = String(c.CrimeNo || "").toLowerCase().trim();
+    const caseMasterId = String(c.CaseMasterID || "").toLowerCase().trim();
+    const normCrime = normalizeCrimeNo(c.CrimeNo).toLowerCase();
+
+    // Check CaseNo
+    if (caseNo && (qLower.includes(caseNo) || qClean.includes(caseNo))) {
+      matched.add(c);
+      continue;
+    }
+
+    // Check CaseNo without FIR/ prefix (e.g. 2026/1042)
+    if (caseNo.startsWith("fir/")) {
+      const bareNo = caseNo.replace(/^fir\//i, "");
+      if (bareNo && (qLower.includes(bareNo) || qClean.includes(bareNo))) {
+        matched.add(c);
+        continue;
+      }
+    }
+
+    // Check CaseMasterID as full standalone word
+    if (caseMasterId) {
+      const re = new RegExp(`\\b${caseMasterId}\\b`, "i");
+      if (re.test(qClean)) {
+        matched.add(c);
+        continue;
+      }
+    }
+
+    // Check CrimeNo
+    if (crimeNo && (qLower.includes(crimeNo) || qClean.includes(crimeNo))) {
+      matched.add(c);
+      continue;
+    }
+
+    // Check normalized CrimeNo (e.g. CR-6114/2026 -> 6114/2026)
+    if (normCrime && normCrime.length >= 4) {
+      const qNorm = normalizeCrimeNo(qLower).toLowerCase();
+      if (qLower.includes(normCrime) || qNorm.includes(normCrime)) {
+        matched.add(c);
+        continue;
+      }
+    }
+  }
+
+  if (matched.size > 0) return Array.from(matched);
+
+  // 2. Token numeric matching for whole numeric tokens in query
+  const numbersInQuery = qClean.match(/\b\d{3,16}\b/g) || [];
+  if (numbersInQuery.length > 0) {
+    for (const c of allCases) {
+      if (!c) continue;
+      const caseNo = String(c.CaseNo || "").toLowerCase().trim();
+      const caseMasterId = String(c.CaseMasterID || "").toLowerCase().trim();
+      const crimeNo = String(c.CrimeNo || "").toLowerCase().trim();
+
+      for (const num of numbersInQuery) {
+        if (num === "2026") continue; // skip common current year standalone token
+        if (caseMasterId === num || caseNo === num || caseNo.endsWith(`/${num}`) || crimeNo === num || crimeNo.endsWith(`/${num}`)) {
+          matched.add(c);
+        }
+      }
+    }
+    if (matched.size > 0) return Array.from(matched);
+  }
+
+  // 3. Date / Timeframe query matching ("this week", "today", "this month")
+  const now = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+
+  const isTodayQuery = qLower.includes("today");
+  const isWeekQuery = qLower.includes("this week") || qLower.includes("past week") || qLower.includes("last week") || qLower.includes("weekly");
+  const isMonthQuery = qLower.includes("this month") || qLower.includes("past month") || qLower.includes("last month") || qLower.includes("monthly");
+
+  if (isTodayQuery || isWeekQuery || isMonthQuery) {
+    let startDateStr = todayStr;
+    if (isWeekQuery) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7);
+      startDateStr = d.toISOString().split("T")[0];
+    } else if (isMonthQuery) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 30);
+      startDateStr = d.toISOString().split("T")[0];
+    }
+
+    for (const c of allCases) {
+      if (!c) continue;
+      const parsedDate = parseCaseDate(c.CrimeRegisteredDate || c.IncidentFromDate);
+      if (parsedDate && parsedDate >= startDateStr && parsedDate <= todayStr) {
+        matched.add(c);
+      }
+    }
+    return Array.from(matched);
+  }
+
+  // 4. Multi-term Category / Station search matching (e.g. kidnapping in whitefield)
+  const tokens = qClean.split(/\s+/).map(normalizeLocationOrTerm).filter(t => t.length > 2 && !STOP_WORDS.has(t));
+  if (tokens.length > 0) {
+    // Try matching ALL search tokens in the row
+    for (const c of allCases) {
+      const rowStr = Object.values(c).join(" ").toLowerCase();
+      if (tokens.every(term => {
+        if (term === "kidnapping" || term === "abduction") {
+          return rowStr.includes("kidnapping") || rowStr.includes("abduction");
+        }
+        return rowStr.includes(term);
+      })) {
+        matched.add(c);
+      }
+    }
+    if (matched.size > 0) return Array.from(matched);
+
+    // Fallback: match ANY significant search token
+    for (const c of allCases) {
+      const rowStr = Object.values(c).join(" ").toLowerCase();
+      if (tokens.some(term => {
+        if (term === "kidnapping" || term === "abduction") {
+          return rowStr.includes("kidnapping") || rowStr.includes("abduction");
+        }
+        return rowStr.includes(term);
+      })) {
+        matched.add(c);
+      }
+    }
+    if (matched.size > 0) return Array.from(matched);
+  }
+
+  return [];
 }
 
 export async function handleChatQuery({ question, role, stationId, language }) {
   console.log(`[Copilot Engine] Processing query: "${question}"`);
   
   try {
-    // 1. Fetch all required tables simultaneously via sheetsStore
-    const [caseMasterRows, accusedRows, complainantRows] = await Promise.all([
+    // 1. Fetch tables simultaneously
+    const [caseMasterRows, accusedRows, complainantRows, consolidatedData] = await Promise.all([
       readExplicitTabRecords("CaseMaster").catch(() => []),
       readExplicitTabRecords("Accused").catch(() => []),
-      readExplicitTabRecords("ComplainantDetails").catch(() => [])
+      readExplicitTabRecords("ComplainantDetails").catch(() => []),
+      casesFromGoogle().catch(() => ({ rows: [] }))
     ]);
 
-    let matchedCaseIds = new Set();
-    const rawQuestion = question || "";
-    const searchTerms = rawQuestion.toLowerCase().split(/\s+/).filter(t => t.length > 0 && !["give", "details", "complete", "of", "and", "accused", "in", "it"].includes(t));
+    // Use consolidated rows as primary case records since it merges CaseMaster and full details
+    const allCases = consolidatedData.rows && consolidatedData.rows.length > 0
+      ? consolidatedData.rows
+      : caseMasterRows;
 
-    // Normalize any crime numbers found in user prompt (e.g. 0011/2026 -> 11/2026)
-    const crimeNoRegex = /(?:CR-?)?\b\d{1,4}\/\d{4}\b/gi;
-    const extractedCrimeNumbers = (rawQuestion.match(crimeNoRegex) || []).map(normalizeCrimeNo);
+    let contextualRows = findMatchingCases(question, allCases);
 
-    // 2. Cross-reference parsing: Match against Crime Numbers, IDs, and Names across tables
-    caseMasterRows.forEach(row => {
-      if (!row) return;
-      const caseId = String(row.CaseMasterID || "").trim();
-      const sheetCrimeNorm = normalizeCrimeNo(row.CrimeNo || row.CrimeNumber);
-
-      // Check normalized crime number match
-      if (extractedCrimeNumbers.length > 0 && extractedCrimeNumbers.includes(sheetCrimeNorm)) {
-        if (caseId) matchedCaseIds.add(caseId);
-      }
-    });
-
-    const targetIdStr = rawQuestion.match(/\b\d+\b/)?.[0]; 
-
-    if (targetIdStr && matchedCaseIds.size === 0) {
-      const targetNum = targetIdStr.trim();
-      
-      complainantRows.forEach(c => {
-        if (c && (String(c.ComplainantID).trim() === targetNum || String(c.CaseMasterID).trim() === targetNum)) {
-          if (c.CaseMasterID) matchedCaseIds.add(String(c.CaseMasterID).trim());
-        }
-      });
-      
-      caseMasterRows.forEach(row => {
-        if (row && String(row.CaseMasterID).trim() === targetNum) {
-          matchedCaseIds.add(targetNum);
-        }
-      });
+    // Fallback Context Guard: Only if query is generic and not date/FIR specific
+    const isTimeOrSpecificSearch = /fir|cr-|\d{3,}|today|week|month|year|recent|last/i.test(question || "");
+    if (contextualRows.length === 0 && !isTimeOrSpecificSearch && allCases.length > 0) {
+      contextualRows = allCases.slice(0, 3);
     }
 
-    // Fuzzy string matching fallback rules if no structural ID parsed out
-    if (matchedCaseIds.size === 0) {
-      complainantRows.forEach(c => {
-        if (c && c.ComplainantName) {
-          const name = String(c.ComplainantName).toLowerCase();
-          if (searchTerms.some(term => name.includes(term)) && c.CaseMasterID) {
-            matchedCaseIds.add(String(c.CaseMasterID).trim());
-          }
-        }
-      });
+    // Ultra-lean context cap to keep prompt tokens in the 100s range (max 3 cases)
+    contextualRows = contextualRows.slice(0, 3);
+
+    if (contextualRows.length === 0) {
+      return language === "kn"
+        ? `ಗೌರವಾನ್ವಿತ ಅಧಿಕಾರಿಗಳೇ, ನಿಮ್ಮ ಅಧಿಕಾರ ವ್ಯಾಪ್ತಿಯಲ್ಲಿ ಈ ಅವಧಿಗೆ/ವಿನಂತಿಗೆ ("${question}") ಸಂಬಂಧಿಸಿದಂತೆ **0** ಪ್ರಕರಣಗಳು ದಾಖಲಾಗಿವೆ (ಒಟ್ಟು ಸಿಸ್ಟಮ್ ಪ್ರಕರಣಗಳು: ${allCases.length}).`
+        : `Officer, based on verified database records, there are currently **0** cases registered matching your request ("${question}"). (Total system cases: ${allCases.length}).`;
     }
 
-    // 3. Filter CaseMaster rows using found IDs or normalized Crime Numbers
-    let contextualRows = caseMasterRows.filter(row => {
-      if (!row) return false;
-      const currentCaseId = String(row.CaseMasterID || "").trim();
-      if (matchedCaseIds.has(currentCaseId)) return true;
-      
-      const sheetCrimeNorm = normalizeCrimeNo(row.CrimeNo || row.CrimeNumber);
-      if (extractedCrimeNumbers.length > 0 && extractedCrimeNumbers.includes(sheetCrimeNorm)) {
-        return true;
-      }
-
-      const rowString = Object.values(row).join(" ").toLowerCase();
-      return searchTerms.some(term => rowString.includes(term));
-    });
-
-    // Fallback Context Guard: Default back gracefully to avoid empty matrix errors on followups
-    if (contextualRows.length === 0 && caseMasterRows.length > 0) {
-      contextualRows = [caseMasterRows[0]];
-    }
-
-    // 4. Inject relational details onto the case blocks safely
+    // 2. Inject relational details onto the case blocks safely (concise 1-liners)
     contextualRows = contextualRows.map(cCase => {
       if (!cCase) return {};
       const caseId = String(cCase.CaseMasterID || "").trim();
       
       const relatedAccusedList = accusedRows
         .filter(a => a && String(a.CaseMasterID || "").trim() === caseId)
-        .map(a => `${a.AccusedName || "Unknown"} (Age: ${a.AgeYear || "N/A"}, Gender: ${a.GenderID || "N/A"})`)
-        .join("\n");
+        .map(a => `${a.AccusedName || "Unknown"}${a.AgeYear ? ` (${a.AgeYear}y)` : ""}`)
+        .join(", ");
 
       const relatedComplainants = complainantRows
         .filter(c => c && String(c.CaseMasterID || "").trim() === caseId)
-        .map(c => `Name: ${c.ComplainantName || "N/A"}\nComplainant ID: ${c.ComplainantID || "N/A"}\nAge: ${c.AgeYear || "N/A"} Years\nGender ID: ${c.GenderID || "N/A"}\nOccupation ID: ${c.OccupationID || "N/A"}\nReligion ID: ${c.ReligionID || "N/A"}\nCaste ID: ${c.CasteID || "N/A"}`)
-        .join("\n");
+        .map(c => `${c.ComplainantName || "N/A"}${c.AgeYear ? ` (${c.AgeYear}y)` : ""}`)
+        .join(", ");
       
       return {
         ...cCase,
-        LinkedAccusedProfiles: relatedAccusedList || "None listed.",
-        TargetComplainantDetails: relatedComplainants || "None listed."
+        LinkedAccusedProfiles: cCase.AccusedNames || relatedAccusedList || "None listed.",
+        TargetComplainantDetails: cCase.Complainant || relatedComplainants || "None listed."
       };
     });
 
     // Apply Role-Based Access Control filters
-    const headers = caseMasterRows.length > 0 ? Object.keys(caseMasterRows[0]) : [];
+    const headers = allCases.length > 0 ? Object.keys(allCases[0]) : [];
     const finalFilteredRows = queryCasesInMemory(contextualRows, [...headers, "LinkedAccusedProfiles", "TargetComplainantDetails"], applyAccessControl({}, role, stationId));
 
     if (finalFilteredRows.length === 0) {
@@ -202,71 +352,79 @@ export async function handleChatQuery({ question, role, stationId, language }) {
         : "Respectful greetings Officer. Based on the verified database records currently available, there are no records found matching the requested query within your authorization scope.";
     }
 
-    // 5. Build prompt payload for Gemini
-    const languageTarget = language === "kn" ? "Kannada (ಕನ್ನಡ)" : "English";
+    // 3. Build ultra-lean prompt payload for Gemini / Groq (< 300 prompt tokens total)
+    const isKannada = language === "kn" || /[\u0C80-\u0CFF]/.test(question || "");
+
+    const IMPORTANT_KEYS = [
+      "CaseNo", "CrimeNo", "CrimeHead", "CrimeSubHead", "Gravity",
+      "PoliceStation", "Officer", "EmployeeID", "Complainant",
+      "AccusedNames", "Status", "Court", "ChargesheetStatus",
+      "IncidentFromDate", "CrimeRegisteredDate", "Summary"
+    ];
+
     const formattedContext = finalFilteredRows.map((row, i) => {
-      const fields = Object.entries(row).map(([k, v]) => `   - ${k}: ${v}`).join("\n");
-      return `[CASE DATA BLOCK #${i + 1}]\n${fields}`;
-    }).join("\n\n");
+      const parts = [];
+      const usedKeys = new Set();
 
-    const prompt = `
-You are the official Karnataka Police Copilot AI Assistant. Your task is to intelligently fulfill the user's request using the verified database records provided below.
+      for (const k of IMPORTANT_KEYS) {
+        if (k in row) {
+          let v = String(row[k] ?? "").trim();
+          if (!v || v === "N/A" || v === "None listed.") continue;
+          v = v.replace(/\s+/g, " ");
+          parts.push(`${k}: ${v}`);
+          usedKeys.add(k);
+        }
+      }
 
-INTENT DETECTION & RESPONSE PROTOCOLS:
-1. LANGUAGE CONSTRAINT: You must read, process, and respond EXCLUSIVELY in ${languageTarget}. If the user asks a question in Kannada, or if the language variable targets Kannada (ಕನ್ನಡ), your entire response statement must be written in Kannada. Do NOT claim you can only speak English.
-2. DYNAMIC LAYOUT ROUTING: 
-   - If the user asks a broad/general question requesting the complete details, full summary, or initial case profiling, output the information strictly matching the **Full Case Template Profile** layout exactly.
-   - If the user asks a specific, narrow follow-up question (e.g., asking exclusively about the accused's age/gender, the officer's ID, or specific parameters), do NOT print the full template. Instead, answer the question directly, concisely, and conversationally in 1-2 lines using the provided context.
+      for (const [k, v] of Object.entries(row)) {
+        if (usedKeys.has(k) || k.endsWith("ID") || k.endsWith("MasterID")) continue;
+        let strVal = String(v ?? "").trim();
+        if (!strVal || strVal === "N/A" || strVal === "None listed.") continue;
+        strVal = strVal.replace(/\s+/g, " ");
+        parts.push(`${k}: ${strVal}`);
+      }
 
-CRITICAL FORMATTING RULES FOR FULL TEMPLATE MODE:
-- Do NOT use markdown bullet points (*) or horizontal dividers (---).
-- Bold ONLY the numeric headers exactly as shown below (e.g., **1. Target Complainant Details**). Do NOT bold property labels or inline text.
-- ABSOLUTE CONSTRAINT: Every single property field item must be printed on its own unique, individual line. There must be zero side-by-side pooling.
-- Clean up scientific notation formats (e.g., display "1.0001e+17" as the standard long integer string 100010000000000000).
+      return `[Case ${i + 1}] ${parts.join(" | ")}`;
+    }).join("\n");
 
-Full Case Template Profile Structure:
-**1. Target Complainant Details**
-Name: [Insert Complainant Name]
-Complainant ID: [Insert Complainant ID]
-Age: [Insert Age] Years
-Gender ID: [Insert GenderID]
-Occupation ID: [Insert OccupationID]
-Religion ID: [Insert ReligionID]
-Caste ID: [Insert CasteID]
+    const totalSystemCount = allCases.length;
+    const todayStr = new Date().toISOString().split("T")[0];
+    const todayCount = allCases.filter(r => String(r.CrimeRegisteredDate || "").startsWith(todayStr)).length;
 
-**2. Case Registration Summary**
-Case Master ID: [Insert CaseMasterID]
-Case Number: [Insert CaseNumber]
-Crime Number: [Insert CrimeNumber]
-Case Category ID: [Insert CaseCategoryID]
-Gravity Offence ID: [Insert GravityOffenceID]
-Crime Major Head ID: [Insert CrimeMajorHeadID]
-Crime Minor Head ID: [Insert CrimeMinorHeadID]
-Case Status ID: [Insert CaseStatusID]
+    const prompt = isKannada ? `
+Official Karnataka Police Copilot AI. Read & respond EXCLUSIVELY in Kannada (ಕನ್ನಡ).
+DB Stats: Total: ${totalSystemCount}, Today: ${todayCount}, Matching query: ${finalFilteredRows.length}.
+If user asked for a count/summary, state the matching count (${finalFilteredRows.length}) clearly first.
 
-**3. Incident & Registration Timeline**
-Incident Start: [Insert Incident From Date]
-Incident End: [Insert Incident To Date]
-Information Received at PS: [Insert Information Received at PS Date]
-Crime Registered Date: [Insert Crime Registered Date]
+Response Layout:
+📌 **ಪ್ರಕರಣದ ಸಂಖ್ಯೆ:** [CaseNo] (ಅಪರಾಧ ಸಂಖ್ಯೆ: [CrimeNo])
+🏷️ **ಅಪರಾಧದ ಪ್ರಕಾರ:** [CrimeHead] - [CrimeSubHead]
+🏛️ **ಪೊಲೀಸ್ ಠಾಣೆ ಮತ್ತು ತನಿಖಾಧಿಕಾರಿ:** [PoliceStation] | [Officer] (ID: [EmployeeID])
+👤 **ದೂರುದಾರರು:** [Complainant] | 🚨 **ಆರೋಪಿಗಳು:** [AccusedNames]
+📊 **ಪ್ರಸ್ತುತ ಸ್ಥಿತಿ:** [Status] | ನ್ಯಾಯಾಲಯ: [Court]
+📅 **ಸಮಯಾವಧಿ:** ನೋಂದಣಿ: [CrimeRegisteredDate]
+📝 **ಸಂಕ್ಷಿಪ್ತ ಸಾರಾಂಶ:** [1-2 ವಾಕ್ಯಗಳಲ್ಲಿ ಸಾರಾಂಶ]
 
-**4. Jurisdictional & Location Details**
-Police Station ID: [Insert Police Station ID]
-Investigating Officer (ID): [Insert Police Person ID]
-Court ID: [Insert Court ID]
-Latitude: [Insert Latitude]
-Longitude: [Insert Longitude]
-
-**5. Linked Accused Profiles**
-[Insert Linked Accused Name] (Age: [Insert Age], Gender: [Insert Gender])
-
-**6. Brief Facts of the Case**
-The complainant reported that during the late-night hours of February 5, 2026, unknown individuals unlawfully breached the security of the premises. The perpetrators caused malicious damage to the property and fled the scene with valuable assets. A formal investigation has been initiated to identify the suspects, recover the stolen property, and bring the offenders to justice.
-
-Verified Case System Context:
-"""
+Context:
 ${formattedContext}
-"""
+
+User Query: "${question}"
+` : `
+Official Karnataka Police Copilot AI. Respond EXCLUSIVELY in English.
+DB Stats: Total: ${totalSystemCount}, Today: ${todayCount}, Matching query: ${finalFilteredRows.length}.
+If user asked a count question, state the matching count (${finalFilteredRows.length}) clearly in your summary statement first.
+
+Response Layout:
+📌 **Case Number:** [CaseNo] (Crime No: [CrimeNo])
+🏷️ **Offence:** [CrimeHead] - [CrimeSubHead]
+🏛️ **Station & IO:** [PoliceStation] | [Officer] (ID: [EmployeeID])
+👤 **Complainant:** [Complainant] | 🚨 **Accused:** [AccusedNames]
+📊 **Status:** [Status] | Court: [Court]
+📅 **Timeline:** Registered: [CrimeRegisteredDate]
+📝 **Summary:** [1-2 sentences concise summary]
+
+Context:
+${formattedContext}
 
 User Query: "${question}"
 `;

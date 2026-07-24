@@ -210,7 +210,7 @@ async function handleApi(req, res, next) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/employee/password") {
-      const { employeeId, password, phoneNumber, notificationPref, hasLoggedIn } = await readBody(req);
+      const { employeeId, password, notificationPref, hasLoggedIn } = await readBody(req);
       if (!employeeId) {
         sendError(res, 400, "Employee ID is required.");
         return;
@@ -223,11 +223,62 @@ async function handleApi(req, res, next) {
       if (hasLoggedIn) {
         updates.HasLoggedIn = "TRUE";
       }
-      if (phoneNumber) updates.PhoneNumber = phoneNumber;
       if (notificationPref !== undefined) updates.NotificationPref = String(notificationPref);
       
-      await updateEmployee(employeeId, updates);
+      // Only update if there are changes (don't modify schema unnecessarily)
+      if (Object.keys(updates).length > 0) {
+        await updateEmployee(employeeId, updates);
+      }
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/phone") {
+      const { employeeId, phoneNumber } = await readBody(req);
+      if (!employeeId) {
+        sendError(res, 400, "Employee ID is required.");
+        return;
+      }
+      if (!phoneNumber) {
+        sendError(res, 400, "Phone number is required.");
+        return;
+      }
+      
+      try {
+        // Save to Consolidated sheet only, not to Employee sheet
+        const CONSOLIDATED_SHEET_ID = process.env.GOOGLE_CONSOLIDATED_SHEET_ID || "1uyzVgCAPZW9CkzkNHFKH0QOJm_nbn5Sr4ul9ngv0ZoM";
+        const CONSOLIDATED_TAB = process.env.GOOGLE_CONSOLIDATED_TAB || "Consolidated_Cases";
+        
+        const { headers, rows } = await readTable(CONSOLIDATED_SHEET_ID, CONSOLIDATED_TAB);
+        
+        // Find row with matching employee ID
+        const existingRowIndex = rows.findIndex(row => 
+          String(row.EmployeeID || "").trim().toLowerCase() === String(employeeId).trim().toLowerCase() ||
+          String(row.AssignedOfficer || "").includes(String(employeeId).trim())
+        );
+        
+        if (existingRowIndex !== -1) {
+          // Update existing row
+          rows[existingRowIndex].PhoneNumber = phoneNumber;
+          rows[existingRowIndex].PhoneUpdatedAt = new Date().toISOString();
+        } else {
+          // Create new row with phone info (edge case: employee with no cases yet)
+          const newRow = Object.fromEntries(headers.map(h => [h, ""]));
+          newRow.EmployeeID = employeeId;
+          newRow.PhoneNumber = phoneNumber;
+          newRow.PhoneUpdatedAt = new Date().toISOString();
+          rows.push(newRow);
+        }
+        
+        // Ensure headers include PhoneNumber and PhoneUpdatedAt
+        if (!headers.includes("PhoneNumber")) headers.push("PhoneNumber");
+        if (!headers.includes("PhoneUpdatedAt")) headers.push("PhoneUpdatedAt");
+        
+        await writeTable(CONSOLIDATED_SHEET_ID, CONSOLIDATED_TAB, headers, rows);
+        sendJson(res, 200, { ok: true });
+      } catch (err) {
+        sendError(res, 500, `Failed to save phone number: ${err.message}`);
+      }
       return;
     }
 
